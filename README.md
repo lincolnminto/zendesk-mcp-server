@@ -194,6 +194,10 @@ Add to your `.vscode/mcp.json`:
 
 </details>
 
+> Using the stdio API-token escape hatch instead of OAuth? Add `ZENDESK_EMAIL` /
+> `ZENDESK_API_TOKEN` via `env` in the config above — worked examples per client:
+> [docs/api-token-stdio.md#mcp-client-configuration](docs/api-token-stdio.md#mcp-client-configuration).
+
 Something not working? See [Troubleshooting](docs/troubleshooting.md).
 
 ## Quick start: remote (HTTP)

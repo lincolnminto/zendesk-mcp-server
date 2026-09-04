@@ -19,3 +19,50 @@ In stdio mode the credentials never leave the local machine, so an API token is 
    ```
 
 If both `ZENDESK_EMAIL` and `ZENDESK_API_TOKEN` are set when stdio starts, the server uses API token authentication. Otherwise it uses OAuth 2.1 PKCE (the recommended path). Setting only one of the two is treated as a harmless stray variable, not an error — it falls back to OAuth.
+
+## MCP client configuration
+
+Put the credentials in the client's own server config (as `env`) instead of exporting them in your shell, so the server always starts with Basic auth already selected — no interactive OAuth prompt to trip over in CI or a headless container.
+
+**Claude Code**
+
+```bash
+claude mcp add zendesk \
+  --env ZENDESK_EMAIL=you@example.com \
+  --env ZENDESK_API_TOKEN=dneib123... \
+  -- npx -y @lincolnminto/zendesk-mcp-server <your-subdomain> --mode single
+```
+
+**Claude Desktop** (`claude_desktop_config.json`)
+
+```json
+{
+  "mcpServers": {
+    "zendesk": {
+      "command": "npx",
+      "args": ["-y", "@lincolnminto/zendesk-mcp-server", "<your-subdomain>", "--mode", "single"],
+      "env": {
+        "ZENDESK_EMAIL": "you@example.com",
+        "ZENDESK_API_TOKEN": "dneib123..."
+      }
+    }
+  }
+}
+```
+
+**VS Code** (`.vscode/mcp.json`)
+
+```json
+{
+  "servers": {
+    "zendesk": {
+      "command": "npx",
+      "args": ["-y", "@lincolnminto/zendesk-mcp-server", "<your-subdomain>", "--mode", "single"],
+      "env": {
+        "ZENDESK_EMAIL": "you@example.com",
+        "ZENDESK_API_TOKEN": "dneib123..."
+      }
+    }
+  }
+}
+```
