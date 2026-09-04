@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // In-memory filesystem backing the mocked `node:fs`, so these tests never touch
 // the real disk. `node:fs` is also used by readPackageInfo (imported indirectly),
 // which then falls back to the default scoped package name — giving a
-// deterministic `fruggr/zendesk-mcp-server` config segment.
+// deterministic `lincolnminto/zendesk-mcp-server` config segment.
 const files = new Map<string, string>();
 const chmodCalls: Array<{ path: string; mode: number }> = [];
 let failWrite = false;
@@ -73,8 +73,12 @@ describe('token-persistence', () => {
     setPlatform('linux');
     process.env['XDG_CONFIG_HOME'] = '/home/u/.config';
     const { resolveTokenPath } = await importFresh();
-    expect(resolveTokenPath('acme')).toBe('/home/u/.config/fruggr/zendesk-mcp-server/acme.json');
-    expect(resolveTokenPath('other')).toBe('/home/u/.config/fruggr/zendesk-mcp-server/other.json');
+    expect(resolveTokenPath('acme')).toBe(
+      '/home/u/.config/lincolnminto/zendesk-mcp-server/acme.json',
+    );
+    expect(resolveTokenPath('other')).toBe(
+      '/home/u/.config/lincolnminto/zendesk-mcp-server/other.json',
+    );
   });
 
   it('sanitizes unsafe characters in the subdomain filename', async () => {
@@ -82,7 +86,7 @@ describe('token-persistence', () => {
     process.env['XDG_CONFIG_HOME'] = '/home/u/.config';
     const { resolveTokenPath } = await importFresh();
     expect(resolveTokenPath('../evil')).toBe(
-      '/home/u/.config/fruggr/zendesk-mcp-server/___evil.json',
+      '/home/u/.config/lincolnminto/zendesk-mcp-server/___evil.json',
     );
   });
 
@@ -91,7 +95,7 @@ describe('token-persistence', () => {
     process.env['APPDATA'] = 'C:\\Users\\u\\AppData\\Roaming';
     const { resolveTokenPath } = await importFresh();
     const path = resolveTokenPath('acme');
-    expect(path).toContain('fruggr');
+    expect(path).toContain('lincolnminto');
     expect(path).toContain('zendesk-mcp-server');
     expect(path).toContain('acme.json');
   });

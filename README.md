@@ -1,10 +1,8 @@
 # Zendesk MCP Server
 
-[![Glama score](https://glama.ai/mcp/servers/fruggr/zendesk-mcp-server/badges/score.svg)](https://glama.ai/mcp/servers/fruggr/zendesk-mcp-server)
-[![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.fruggr%2Fzendesk--mcp--server-0a7ea4)](https://registry.modelcontextprotocol.io/?search=io.github.fruggr/zendesk-mcp-server)
-[![npm version](https://img.shields.io/npm/v/@fruggr/zendesk-mcp-server?logo=npm&color=cb3837)](https://www.npmjs.com/package/@fruggr/zendesk-mcp-server)
-[![License: MIT](https://img.shields.io/npm/l/@fruggr/zendesk-mcp-server?color=blue)](LICENSE)
-[![Node.js](https://img.shields.io/node/v/@fruggr/zendesk-mcp-server?logo=nodedotjs&logoColor=white&color=339933)](https://nodejs.org)
+[![npm version](https://img.shields.io/npm/v/@lincolnminto/zendesk-mcp-server?logo=npm&color=cb3837)](https://www.npmjs.com/package/@lincolnminto/zendesk-mcp-server)
+[![License: MIT](https://img.shields.io/npm/l/@lincolnminto/zendesk-mcp-server?color=blue)](LICENSE)
+[![Node.js](https://img.shields.io/node/v/@lincolnminto/zendesk-mcp-server?logo=nodedotjs&logoColor=white&color=339933)](https://nodejs.org)
 
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that
 puts Zendesk inside your AI assistant. It finds answers in the Help Center;
@@ -116,10 +114,10 @@ Suite).
 
 ```bash
 # Run without installing
-npx -y @fruggr/zendesk-mcp-server <your-subdomain>
+npx -y @lincolnminto/zendesk-mcp-server <your-subdomain>
 
 # Or install globally
-npm install -g @fruggr/zendesk-mcp-server
+npm install -g @lincolnminto/zendesk-mcp-server
 zendesk-mcp-server <your-subdomain>
 ```
 
@@ -161,7 +159,7 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "zendesk": {
       "command": "npx",
-      "args": ["-y", "@fruggr/zendesk-mcp-server", "<your-subdomain>", "--mode", "single"]
+      "args": ["-y", "@lincolnminto/zendesk-mcp-server", "<your-subdomain>", "--mode", "single"]
     }
   }
 }
@@ -173,7 +171,7 @@ Add to your `claude_desktop_config.json`:
 <summary><strong>Claude Code</strong></summary>
 
 ```bash
-claude mcp add zendesk -- npx -y @fruggr/zendesk-mcp-server <your-subdomain> --mode single
+claude mcp add zendesk -- npx -y @lincolnminto/zendesk-mcp-server <your-subdomain> --mode single
 ```
 
 </details>
@@ -188,7 +186,7 @@ Add to your `.vscode/mcp.json`:
   "servers": {
     "zendesk": {
       "command": "npx",
-      "args": ["-y", "@fruggr/zendesk-mcp-server", "<your-subdomain>", "--mode", "single"]
+      "args": ["-y", "@lincolnminto/zendesk-mcp-server", "<your-subdomain>", "--mode", "single"]
     }
   }
 }
@@ -282,7 +280,7 @@ stdio-only CI escape hatch, never a shared or HTTP-wide credential
 **Is it safe to run via `npx`?**
 Releases are published from CI via npm Trusted Publishing (OIDC), so each version
 carries a build provenance attestation you can verify on its
-[npm page](https://www.npmjs.com/package/@fruggr/zendesk-mcp-server). No secrets
+[npm page](https://www.npmjs.com/package/@lincolnminto/zendesk-mcp-server). No secrets
 are ever logged by the server.
 
 ## Contributing

@@ -49,7 +49,10 @@ describe('readPackageInfo', () => {
   it('falls back to safe defaults when no package.json can be read', async () => {
     const { readPackageInfo } = await loadWithReads([ENOENT]);
 
-    expect(readPackageInfo()).toEqual({ name: '@fruggr/zendesk-mcp-server', version: '0.0.0' });
+    expect(readPackageInfo()).toEqual({
+      name: '@lincolnminto/zendesk-mcp-server',
+      version: '0.0.0',
+    });
   });
 
   it('reads package.json once and serves later calls from the cache', async () => {

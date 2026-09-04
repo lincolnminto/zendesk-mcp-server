@@ -41,7 +41,7 @@ The commit-type → release-level mapping lives in `.releaserc.json` (preset `co
 
 After semantic-release runs, the same `release.yml` job mirrors the release into
 the [official MCP registry](https://registry.modelcontextprotocol.io) under the
-name `io.github.fruggr/zendesk-mcp-server`, so registry-driven MCP clients pick up
+name `io.github.lincolnminto/zendesk-mcp-server`, so registry-driven MCP clients pick up
 each new version automatically.
 
 - **Gating.** `@semantic-release/npm` rewrites `package.json`'s `version` in the
@@ -69,8 +69,8 @@ each new version automatically.
   `package.json` (which the generator uses as the `server.json` `name`).
 - **Auth.** `mcp-publisher login github-oidc` reuses the workflow's
   `id-token: write` GitHub OIDC token, the same permission npm Trusted
-  Publishing already relies on. No new secret, and the `io.github.fruggr/*`
-  namespace is authorized because the workflow runs in the `fruggr` org's repo.
+  Publishing already relies on. No new secret, and the `io.github.lincolnminto/*`
+  namespace is authorized because the workflow runs in `lincolnminto`'s repo.
 - **Resilience.** The publish is retried a few times to absorb npm propagation
   lag (the registry validates by fetching the freshly published npm tarball).
 

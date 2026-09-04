@@ -5,7 +5,7 @@ This is the deep dive behind the **Multi-agent compatibility** rule in
 clear:
 
 1. **New tool.** Does its definition meet the quality bar the [Glama
-   score](https://glama.ai/mcp/servers/fruggr/zendesk-mcp-server) grades us on?
+   score](https://glama.ai/mcp/servers/lincolnminto/zendesk-mcp-server) grades us on?
 2. **Tool change.** Does the JSON Schema we expose to agents still carry
    everything an agent could depend on (no regression)?
 

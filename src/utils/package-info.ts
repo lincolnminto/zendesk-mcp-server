@@ -10,7 +10,7 @@ export interface PackageInfo {
 // Used only if package.json can't be located/parsed (should not happen in a
 // published install). Keeps the server bootable rather than throwing.
 const FALLBACK: PackageInfo = {
-  name: '@fruggr/zendesk-mcp-server',
+  name: '@lincolnminto/zendesk-mcp-server',
   version: '0.0.0',
 };
 

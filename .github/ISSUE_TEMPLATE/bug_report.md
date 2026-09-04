@@ -12,7 +12,7 @@ A clear and concise description of what the bug is.
 
 ## Steps to reproduce
 
-1. Command run (e.g. `npx -y @fruggr/zendesk-mcp-server acme --mode single`)
+1. Command run (e.g. `npx -y @lincolnminto/zendesk-mcp-server acme --mode single`)
 2. MCP client used (Claude Desktop / Claude Code / VS Code / other)
 3. Tool / operation called
 4. ...
