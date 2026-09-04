@@ -13,17 +13,25 @@ Both boot the same `createMcpServer` the production entry point uses
 
 ## Auth note (important)
 
-This server is **OAuth 2.1 PKCE only**; there is no API-token mode. The PKCE
-flow opens a **browser**, which does not work in a headless remote or web
-environment. So for live testing:
+The OAuth 2.1 PKCE flow opens a **browser**, which does not work in a headless
+remote or web environment. So for live testing:
 
 - `list` and schema validation work **without any credentials**, no token needed.
-- A real `call` needs a Zendesk OAuth **access token**. Obtain one via the normal
-  OAuth flow (e.g. in a local session where the browser can open), then provide it:
+- A real `call` needs credentials, in order of preference:
+  1. **`ZENDESK_EMAIL` + `ZENDESK_API_TOKEN`** — the same stdio API-token
+     escape hatch production uses (see [`docs/api-token-stdio.md`](api-token-stdio.md)),
+     the simplest option here since it needs no manual OAuth step.
+  2. **`ZENDESK_OAUTH_TOKEN`** — a pre-obtained Zendesk OAuth **access token**,
+     for testing against a real per-user OAuth token specifically. Obtain one
+     via the normal OAuth flow (e.g. in a local session where the browser can
+     open), then export it.
 
   ```bash
   ZENDESK_SUBDOMAIN=<your-subdomain>
-  ZENDESK_OAUTH_TOKEN=<oauth-access-token>
+  ZENDESK_EMAIL=<agent@company.com>
+  ZENDESK_API_TOKEN=<your-api-token>
+  # or, instead of the two above:
+  # ZENDESK_OAUTH_TOKEN=<oauth-access-token>
   ```
 
 In a Claude Code web environment, inject these as environment variables in the

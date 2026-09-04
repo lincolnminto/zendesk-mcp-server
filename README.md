@@ -46,11 +46,12 @@ Most Zendesk integrations run on a shared admin API key, which hands every user
 full access to every ticket, and bolt on a fixed set of tools. This one is built
 differently.
 
-- Per-user authentication, OAuth only. Both transports use OAuth 2.1 PKCE: each
-  user signs in with their own Zendesk credentials, so the assistant sees and
-  touches exactly what that person is allowed to, the same scoping you get by
-  signing into Zendesk directly. Static API tokens are deliberately not
-  supported ([why](#what-this-server-does-not-do)).
+- Per-user authentication by default. Both transports default to OAuth 2.1
+  PKCE: each user signs in with their own Zendesk credentials, so the assistant
+  sees and touches exactly what that person is allowed to, the same scoping you
+  get by signing into Zendesk directly. A static API-token escape hatch is
+  available for stdio-only CI / headless contexts; HTTP accepts only OAuth
+  ([why](#what-this-server-does-not-do)).
 - Section-based article editing. For large Help Center articles, read and
   rewrite one section at a time (parsed by `h1`/`h2`/`h3` headings) instead of
   shuffling the full HTML body through the assistant. On a targeted edit that
@@ -74,14 +75,15 @@ Look elsewhere when:
 
 - You need Zendesk products outside Support and Guide (Talk, Explore analytics,
   Sell). Those endpoints aren't covered.
-- You need a single shared service account, or static API-token auth. This
-  server supports neither, by design (see below).
+- You need a single shared service account for a multi-user or remote
+  deployment. This server refuses that by design (the API-token escape hatch is
+  stdio-only CI, not a way to turn this into a shared backend — see below).
 
 ## What this server does *not* do
 
-There is no API-token authentication. The server speaks OAuth 2.1 PKCE and
-nothing else: no `ZENDESK_EMAIL` + `ZENDESK_API_TOKEN` (Basic auth) mode, in any
-transport. That is deliberate, for two reasons.
+There is no shared or HTTP-wide API-token authentication. Both transports
+default to OAuth 2.1 PKCE, and HTTP accepts *only* that — a static API token is
+refused at boot there. That is deliberate, for two reasons.
 
 1. **API tokens are insufficiently secure.** A Zendesk API token is a
    long-lived, static, shared secret that carries the full rights of the user
@@ -93,10 +95,16 @@ transport. That is deliberate, for two reasons.
    makes a multi-user remote deployment unsafe: over HTTP it would expose the
    issuing user's rights to every caller.
 
-If you specifically need an API-token or service-account mode (headless CI with
-a shared account, say), use one of the other Zendesk MCP servers that support
-it. A few are listed under
-[Inspiration & related projects](#inspiration--related-projects).
+The one exception is **stdio, for headless/CI use**: set `ZENDESK_EMAIL` +
+`ZENDESK_API_TOKEN` and the server uses Basic auth instead of starting the
+OAuth browser flow — see [`docs/api-token-stdio.md`](docs/api-token-stdio.md).
+Reason 2 still applies there in full; reason 1's "every caller" clause doesn't,
+since a stdio server is one local process for one operator, with no second
+caller to expose rights to.
+
+If you need a *shared* service account, or static API-token auth over HTTP,
+use one of the other Zendesk MCP servers that support it. A few are listed
+under [Inspiration & related projects](#inspiration--related-projects).
 
 ## Quick start: local (stdio)
 
@@ -132,6 +140,14 @@ waiting for sign-in, so authenticate in the browser and then retry the request.
 The token is persisted to an owner-only file and reused across restarts, so you
 don't authenticate again every time your MCP client respawns the server (path
 and overrides: [`ZENDESK_TOKEN_FILE`](docs/configuration.md#zendesk_token_file)).
+
+> **API token escape hatch (stdio only).** For headless/CI environments where a
+> browser is unavailable, set `ZENDESK_EMAIL` + `ZENDESK_API_TOKEN` (generate
+> the token in **Admin Center → Apps and integrations → APIs → Zendesk API →
+> Token Access**). The server then uses Basic auth instead of starting the
+> OAuth flow. This mode is **refused at boot in HTTP** because a shared static
+> credential would expose every caller to the issuing user's rights. Full setup:
+> [`docs/api-token-stdio.md`](docs/api-token-stdio.md).
 
 ### MCP client wiring
 
@@ -258,8 +274,9 @@ Zendesk Support (tickets, users, organizations) and the Help Center / Guide
 attachments). Talk, Explore and Sell are out of scope.
 
 **Do I need a Zendesk admin API key?**
-No, and the server doesn't support one. Each user authenticates with their own
-credentials and the server acts with exactly their permissions
+No. Each user authenticates with their own OAuth credentials by default, and
+the server acts with exactly their permissions. A static API token is only a
+stdio-only CI escape hatch, never a shared or HTTP-wide credential
 ([why](#what-this-server-does-not-do)).
 
 **Is it safe to run via `npx`?**

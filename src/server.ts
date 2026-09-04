@@ -28,8 +28,10 @@ import { createStrictParamsParser } from './utils/validation';
  * Invoke a tool handler, notifying `onUnauthorized` when Zendesk rejects the
  * token (401). This lets the OAuth store drop the dead token so the next call
  * refreshes/re-authenticates instead of replaying a revoked token. The callback
- * is omitted only where there is nothing to invalidate (e.g. HTTP per-session
- * bearer, owned by the client).
+ * is omitted where there is nothing to invalidate: the HTTP per-session bearer
+ * (owned by the client), or stdio API-token mode (a stale static token is a
+ * credential-rotation problem for the operator, not something to recover from
+ * at runtime).
  *
  * Client-visible behaviour on an in-flight revocation: the 401 is a *backstop*,
  * not a transparent retry. The current call still surfaces the error; recovery
@@ -208,7 +210,8 @@ export interface ToolsetParams {
   getToken: () => string | Promise<string>;
   // Called when a tool handler hits a 401 from Zendesk. Lets the OAuth token
   // store invalidate the rejected token. Omitted where there is nothing to
-  // invalidate (e.g. the HTTP per-session bearer is owned by the client).
+  // invalidate: the HTTP per-session bearer is owned by the client, and stdio
+  // API-token mode has no token to refresh.
   onUnauthorized?: (() => void) | undefined;
   logger?: Logger;
 }
