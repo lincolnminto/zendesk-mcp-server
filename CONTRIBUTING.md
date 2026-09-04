@@ -51,6 +51,9 @@ node dist/index.js <your-subdomain>
 # Dev mode, OAuth (browser opens on first tool call)
 pnpm dev -- <your-subdomain> --mode all
 
+# Dev mode, API token (stdio only, headless/CI escape hatch)
+ZENDESK_EMAIL=you@company.com ZENDESK_API_TOKEN=your_token pnpm dev -- <your-subdomain> --mode all
+
 # Dev mode, HTTP transport (OAuth bearer from the MCP client)
 pnpm dev -- <your-subdomain> --transport http --port 3000 --public-url http://localhost:3000
 

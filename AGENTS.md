@@ -52,11 +52,14 @@ pick its row in that policy table, where a write is never replayed once it may h
 reached Zendesk. Why the loop is ours rather than a library's — and what would change
 that: `docs/decisions/client-retry.md`.
 
-**Auth** — per-user OAuth 2.1 PKCE only, no static API-token mode. stdio: lazy
-browser PKCE via `token-store.ts`. HTTP: per-session bearer captured from
-`Authorization:`. Dropping API-token auth is deliberate (static shared
-credential — insufficiently secure, doesn't scale to multi-user/remote); the
-rationale lives in `README.md` ("What this server does *not* do").
+**Auth** — stdio auto-detects the mode: OAuth 2.1 PKCE (`token-store.ts`, lazy
+browser flow) by default, or static Basic auth (`auth/api-token.ts`) when both
+`ZENDESK_EMAIL` and `ZENDESK_API_TOKEN` are set — a headless/CI escape hatch,
+never a shared-account mode. HTTP: per-session bearer captured from
+`Authorization:` only; API-token config is **refused at boot** there (a shared
+static credential would expose every caller to the issuing user's rights). Why
+this reopens a prior OAuth-only decision, and what stays off the table:
+`docs/decisions/api-token-auth.md`.
 
 Local setup and auth flows live in `README.md`; CLI flags and env vars in
 `docs/configuration.md`; remote HTTP deployment in `docs/http-deployment.md`;

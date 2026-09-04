@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { buildBasicAuthHeader } from './auth/api-token';
 import { createTokenStore } from './auth/token-store';
 import type { Config } from './config';
 import { loadConfig } from './config';
@@ -9,9 +10,18 @@ import { startStdioTransport } from './transports/stdio';
 import { createLogger, type Logger } from './utils/logger';
 import { installShutdown } from './utils/shutdown';
 
+// What connectStdio needs, regardless of which auth mode produced it. No
+// `invalidate` in API-token mode: a stale static token is a credential
+// rotation problem, not something the server can recover from at runtime.
+interface StdioTokenSource {
+  getToken: () => string | Promise<string>;
+  invalidate?: () => void;
+  dispose: () => void;
+}
+
 // OAuth mode — browser-based auth on first tool call. `invalidate` drops the
 // dead access token on a 401 so the next call refreshes/re-authenticates.
-const buildStdioTokenStore = (config: Config, logger: Logger) =>
+const buildOAuthTokenSource = (config: Config, logger: Logger): StdioTokenSource =>
   createTokenStore(
     {
       subdomain: config.subdomain,
@@ -21,18 +31,29 @@ const buildStdioTokenStore = (config: Config, logger: Logger) =>
     logger,
   );
 
+// stdio auto-detects the auth mode: API token (static Basic auth) when both
+// ZENDESK_EMAIL and ZENDESK_API_TOKEN are set — a headless/CI escape hatch,
+// see docs/api-token-stdio.md — OAuth 2.1 PKCE otherwise.
+const buildStdioTokenSource = (config: Config, logger: Logger): StdioTokenSource => {
+  if (config.zendeskEmail && config.zendeskApiToken) {
+    const staticToken = buildBasicAuthHeader(config.zendeskEmail, config.zendeskApiToken);
+    return { getToken: () => staticToken, dispose: () => undefined };
+  }
+  return buildOAuthTokenSource(config, logger);
+};
+
 // Both stdio paths end with a server already connected to its transport; dev
 // mode wires `reload_tools` and connects on its own. Returning the server is
 // what lets the caller close it on shutdown.
 const connectStdio = async (
   config: Config,
-  tokenStore: ReturnType<typeof buildStdioTokenStore>,
+  tokenSource: StdioTokenSource,
   logger: Logger,
 ): Promise<McpServer> => {
   if (config.dev) {
-    return startDevServer(config, tokenStore.getToken, logger, tokenStore.invalidate);
+    return startDevServer(config, tokenSource.getToken, logger, tokenSource.invalidate);
   }
-  const server = createMcpServer(config, tokenStore.getToken, logger, tokenStore.invalidate);
+  const server = createMcpServer(config, tokenSource.getToken, logger, tokenSource.invalidate);
   await startStdioTransport(server, logger);
   return server;
 };
@@ -42,8 +63,8 @@ const main = async (): Promise<void> => {
   const logger = createLogger(config.logLevel);
 
   if (config.transport === 'stdio') {
-    const tokenStore = buildStdioTokenStore(config, logger);
-    const server = await connectStdio(config, tokenStore, logger);
+    const tokenSource = buildStdioTokenSource(config, logger);
+    const server = await connectStdio(config, tokenSource, logger);
 
     // Installed *after* the transport is connected: the SDK's stdin `data`
     // listener is what puts stdin in flowing mode, and `end` only fires there.
@@ -52,7 +73,7 @@ const main = async (): Promise<void> => {
       logger,
       cleanup: async () => {
         await server.close();
-        tokenStore.dispose();
+        tokenSource.dispose();
       },
     });
     return;

@@ -54,6 +54,15 @@ When the browser fails to open, look for the `oauth_browser_open_failed` event:
 it reports the underlying error, the platform, and which environment markers are
 present (no secrets, tokens, or env values are ever logged).
 
+## I set `ZENDESK_EMAIL` / `ZENDESK_API_TOKEN` but it still opens a browser
+
+Both must be set together to activate stdio's API-token (Basic auth) mode; a
+single one alone is treated as harmless stray config and falls back to OAuth
+silently, with no error and no log line. Double-check both variables are
+actually reaching the process — a typo'd name, or a shell/compose file that
+never exported one of them, looks identical to "unset" here. See
+[`docs/api-token-stdio.md`](api-token-stdio.md).
+
 ## The OAuth callback port is already in use
 
 The sign-in flow runs a short-lived local server on port `27439` to receive the

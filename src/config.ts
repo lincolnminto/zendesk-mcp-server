@@ -16,6 +16,15 @@ export type Transport = z.infer<typeof Transport>;
 export const ConfigSchema = z.object({
   subdomain: z.string().min(1, 'ZENDESK_SUBDOMAIN is required'),
   oauthClientId: z.string().min(1),
+  /**
+   * Paired with `zendeskApiToken` to activate stdio's API-token (Basic auth)
+   * escape hatch for headless/CI, where the OAuth browser flow cannot run.
+   * Both must be set for the mode to activate — see the HTTP guard and the
+   * auto-detection in `src/index.ts`. Never available over HTTP.
+   * `docs/decisions/api-token-auth.md`.
+   */
+  zendeskEmail: z.string().optional(),
+  zendeskApiToken: z.string().optional(),
   logLevel: LogLevel,
   mode: ToolMode,
   readOnly: z.boolean(),
@@ -342,6 +351,8 @@ export const loadConfig = (argv: string[] = process.argv.slice(2)): Config => {
   // schema on its own, and derived-but-unused `_zendesk` here keeps that report
   // down to the one issue the operator can act on.
   const oauthClientId = requireNonEmptyEnv('ZENDESK_OAUTH_CLIENT_ID') ?? `${subdomain}_zendesk`;
+  const zendeskEmail = requireNonEmptyEnv('ZENDESK_EMAIL');
+  const zendeskApiToken = requireNonEmptyEnv('ZENDESK_API_TOKEN');
 
   const mode = cli.tools?.length ? 'all' : (cli.mode ?? 'namespace');
 
@@ -353,9 +364,28 @@ export const loadConfig = (argv: string[] = process.argv.slice(2)): Config => {
   // empty is rejected by requireNonEmptyEnv. Format is schema-validated.
   const hcResourceScheme = cli.hcResourceScheme ?? requireNonEmptyEnv('HC_RESOURCE_SCHEME');
 
+  const transportSettings = resolveTransportSettings(cli);
+
+  // API-token auth (ZENDESK_EMAIL + ZENDESK_API_TOKEN, Basic auth) is a
+  // stdio-only escape hatch for headless/CI contexts where the OAuth browser
+  // flow cannot run. Refused only when BOTH are set in HTTP mode — a shared
+  // static credential would expose every caller to the issuing user's rights.
+  // A stray single variable is harmless and falls back to OAuth (see
+  // buildStdioTokenSource in src/index.ts); rejecting it would surprise an
+  // operator who left one behind while intending OAuth.
+  if (transportSettings.transport === 'http' && zendeskEmail && zendeskApiToken) {
+    throw new Error(
+      'API token authentication (ZENDESK_EMAIL + ZENDESK_API_TOKEN) is not supported in HTTP mode. ' +
+        'HTTP mode requires per-user OAuth 2.1 PKCE - unset these variables and configure your ' +
+        'MCP client to perform the OAuth flow against Zendesk.',
+    );
+  }
+
   return ConfigSchema.parse({
     subdomain,
     oauthClientId,
+    zendeskEmail,
+    zendeskApiToken,
     logLevel: cli.logLevel ?? requireNonEmptyEnv('LOG_LEVEL') ?? 'info',
     mode,
     readOnly: cli.readOnly ?? false,
@@ -366,6 +396,6 @@ export const loadConfig = (argv: string[] = process.argv.slice(2)): Config => {
     hcResourceScheme,
     dev: cli.dev ?? false,
     callbackPort,
-    ...resolveTransportSettings(cli),
+    ...transportSettings,
   });
 };

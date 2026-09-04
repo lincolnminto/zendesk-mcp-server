@@ -18,14 +18,16 @@
  *   pnpm tsx scripts/mcp-live.ts call get_current_user '{}' -- --mode all
  *   pnpm tsx scripts/mcp-live.ts read zendesk-hc://topology -- --mode all
  *
- * Auth: this server is OAuth 2.1 PKCE only, and the browser flow can't run
- * headless. So `list` / schema validation work credential-free, and a real
- * `call` or `read` reads a pre-obtained OAuth access token from
- * ZENDESK_OAUTH_TOKEN and sends it as a Bearer. Grab one via the normal OAuth
- * flow (e.g. in a local session) and export it before calling.
+ * Auth: the OAuth browser flow can't run headless, so `list` / schema
+ * validation work credential-free, and a real `call` or `read` prefers
+ * ZENDESK_EMAIL + ZENDESK_API_TOKEN (the same stdio API-token escape hatch
+ * production uses — see docs/api-token-stdio.md), falling back to a
+ * pre-obtained OAuth access token from ZENDESK_OAUTH_TOKEN. Set one pair
+ * before calling.
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { buildBasicAuthHeader } from '../src/auth/api-token';
 import { loadConfig, VALUE_FLAG_NAMES } from '../src/config';
 import { createMcpServer } from '../src/server';
 
@@ -59,17 +61,22 @@ if (!process.env['ZENDESK_SUBDOMAIN'] && !hasPositionalSubdomain) {
 
 const config = loadConfig(configArgs);
 
-// OAuth is unusable headless, so a missing token only errors when a tool
-// actually tries to reach Zendesk — `list` and arg validation still work
-// without credentials. Throwing (rather than exiting) lets the MCP layer
-// surface a clean tool error instead of killing the process.
+// Mirrors src/index.ts's auto-detection: prefer API-token auth (no manual
+// OAuth step needed), then a pre-obtained OAuth access token. OAuth's own
+// browser flow is unusable headless, so a missing credential only errors when
+// a tool actually tries to reach Zendesk — `list` and arg validation still
+// work without one. Throwing (rather than exiting) lets the MCP layer surface
+// a clean tool error instead of killing the process.
 const oauthToken = process.env['ZENDESK_OAUTH_TOKEN'];
 const getToken = (): string => {
+  if (config.zendeskEmail && config.zendeskApiToken) {
+    return buildBasicAuthHeader(config.zendeskEmail, config.zendeskApiToken);
+  }
   if (oauthToken) return oauthToken;
   throw new Error(
-    'Live calls need a Zendesk OAuth access token in ZENDESK_OAUTH_TOKEN ' +
-      '(the browser PKCE flow cannot run headless here). ' +
-      'Obtain one via the normal OAuth flow and export it, or use `list` which requires no token.',
+    'Live calls need ZENDESK_EMAIL + ZENDESK_API_TOKEN (simplest for headless/CI), or a ' +
+      'pre-obtained ZENDESK_OAUTH_TOKEN (the browser PKCE flow cannot run headless here). ' +
+      'Set one pair in the environment, or use `list` which requires no token.',
   );
 };
 

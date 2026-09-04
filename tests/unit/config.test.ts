@@ -5,6 +5,8 @@ describe('loadConfig', () => {
   beforeEach(() => {
     delete process.env['ZENDESK_SUBDOMAIN'];
     delete process.env['ZENDESK_OAUTH_CLIENT_ID'];
+    delete process.env['ZENDESK_EMAIL'];
+    delete process.env['ZENDESK_API_TOKEN'];
     delete process.env['LOG_LEVEL'];
     delete process.env['TRANSPORT'];
     delete process.env['HOST'];
@@ -113,6 +115,45 @@ describe('loadConfig', () => {
   it('parses --log-level flag', () => {
     const config = loadConfig(['mycompany', '--log-level', 'debug']);
     expect(config.logLevel).toBe('debug');
+  });
+
+  // API-token (Basic auth) is a stdio-only escape hatch for headless/CI, where
+  // the OAuth browser flow cannot run. Auto-detected by env-var presence, never
+  // an explicit flag. See docs/decisions/api-token-auth.md.
+  describe('API token auth (ZENDESK_EMAIL + ZENDESK_API_TOKEN)', () => {
+    it('captures zendeskEmail and zendeskApiToken from env', () => {
+      process.env['ZENDESK_EMAIL'] = 'a@b.com';
+      process.env['ZENDESK_API_TOKEN'] = 'tok';
+      const config = loadConfig(['mycompany']);
+      expect(config.zendeskEmail).toBe('a@b.com');
+      expect(config.zendeskApiToken).toBe('tok');
+    });
+
+    it('accepts API token credentials in stdio mode', () => {
+      process.env['ZENDESK_EMAIL'] = 'a@b.com';
+      process.env['ZENDESK_API_TOKEN'] = 'tok';
+      const config = loadConfig(['mycompany']);
+      expect(config.transport).toBe('stdio');
+      expect(config.zendeskApiToken).toBe('tok');
+    });
+
+    it('refuses API token credentials in HTTP mode when both are set', () => {
+      process.env['ZENDESK_EMAIL'] = 'a@b.com';
+      process.env['ZENDESK_API_TOKEN'] = 'tok';
+      expect(() => loadConfig(['mycompany', '--transport', 'http'])).toThrow(
+        /API token authentication.*not supported in HTTP mode.*unset these variables.*perform the OAuth flow against Zendesk/,
+      );
+    });
+
+    it('allows ZENDESK_EMAIL alone in HTTP mode (no token actually configured)', () => {
+      process.env['ZENDESK_EMAIL'] = 'ops@example.com';
+      expect(() => loadConfig(['mycompany', '--transport', 'http'])).not.toThrow();
+    });
+
+    it('allows ZENDESK_API_TOKEN alone in HTTP mode', () => {
+      process.env['ZENDESK_API_TOKEN'] = 'tok';
+      expect(() => loadConfig(['mycompany', '--transport', 'http'])).not.toThrow();
+    });
   });
 
   describe('transport', () => {
@@ -515,6 +556,8 @@ describe('loadConfig', () => {
 
     it.each([
       'ZENDESK_OAUTH_CLIENT_ID',
+      'ZENDESK_EMAIL',
+      'ZENDESK_API_TOKEN',
       'LOG_LEVEL',
       'TRANSPORT',
       'HOST',

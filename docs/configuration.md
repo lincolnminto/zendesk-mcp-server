@@ -7,9 +7,10 @@ deep-link a specific setting (e.g.
 
 CLI flags generally take precedence over the matching environment variable. The
 one exception is `--cors-origin`, which is additive and *extends* `CORS_ORIGIN`
-rather than replacing it. The server uses per-user OAuth 2.1 PKCE on every
-transport; there is no static API-token mode (see
-[What this server does *not* do](../README.md#what-this-server-does-not-do)).
+rather than replacing it. The server uses per-user OAuth 2.1 PKCE by default on
+every transport; a static API-token mode exists as a stdio-only escape hatch
+(see [What this server does *not* do](../README.md#what-this-server-does-not-do)
+and [`docs/api-token-stdio.md`](api-token-stdio.md)).
 
 ## CLI reference
 
@@ -162,6 +163,16 @@ Local port for the OAuth browser callback (also `--callback-port`). Must match t
 **Required:** no · **Default:** OS config dir
 
 Path to the persisted OAuth token file (`0600`).
+
+### `ZENDESK_EMAIL`
+**Required:** only to activate stdio API-token auth (paired with `ZENDESK_API_TOKEN`) · **Default:** none
+
+Zendesk agent email for Basic auth. **stdio only** — refused at boot if both this and `ZENDESK_API_TOKEN` are set in HTTP mode. Setting only one of the two falls back to OAuth rather than erroring. See [`docs/api-token-stdio.md`](api-token-stdio.md).
+
+### `ZENDESK_API_TOKEN`
+**Required:** only to activate stdio API-token auth (paired with `ZENDESK_EMAIL`) · **Default:** none
+
+Zendesk API token for Basic auth. **stdio only** — refused at boot if both this and `ZENDESK_EMAIL` are set in HTTP mode. Setting only one of the two falls back to OAuth rather than erroring. See [`docs/api-token-stdio.md`](api-token-stdio.md).
 
 ### `TRANSPORT`
 **Required:** no · **Default:** `stdio`

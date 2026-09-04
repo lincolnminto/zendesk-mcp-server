@@ -37,6 +37,7 @@ them, so redact anything you add by hand.
 - Node.js version: <!-- node --version -->
 - OS:
 - Transport: <!-- stdio / http -->
+- Auth method: <!-- OAuth 2.1 PKCE / API token (stdio only) -->
 - Mode / flags: <!-- e.g. --mode namespace --read-only -->
 
 ## Additional context
