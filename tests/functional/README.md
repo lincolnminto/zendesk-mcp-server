@@ -31,18 +31,18 @@ Each scenario declares which channels it uses in its frontmatter (`channels`):
 - **B — MCP Zendesk in the executor's Claude Code stack.** For future
   scenarios that exercise runtime behaviour (e.g. a new tool, proxy routing).
   Requires the executor to have configured a Zendesk MCP server locally
-  pointing at the `fruggr` instance. Not exercised by the v1 scenarios.
+  pointing at the `acme` instance. Not exercised by the v1 scenarios.
 
 ## Prerequisites (executor side)
 
 1. Build the server once: `pnpm build`.
 2. Source the local Zendesk credentials (perso, never commit):
    ```sh
-   export ZENDESK_SUBDOMAIN=fruggr
+   export ZENDESK_SUBDOMAIN=acme
    # ZENDESK_OAUTH_CLIENT_ID defaults to ${subdomain}_zendesk; override if needed
    ```
 3. For channel B scenarios only: ensure your Claude Code MCP config exposes a
-   Zendesk server bound to `fruggr`.
+   Zendesk server bound to `acme`.
 
 ## Adding a scenario for a future PR
 

@@ -33,7 +33,7 @@ export const MOCK_VIEW = {
 // record has a `url`. The resolution metric is `total_resolution_time`.
 export const MOCK_SLA_POLICY = {
   id: 123,
-  title: 'SLA contractuels fruggr - Bugs/Incidents',
+  title: 'SLA contractuels acme - Bugs/Incidents',
   description: 'Contractual SLA for bugs and incidents',
   position: 1,
   filter: {

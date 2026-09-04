@@ -291,9 +291,9 @@ describe('loadConfig', () => {
     });
 
     it('accepts any RFC 3986 scheme: letter then letters, digits, "+", "-", "."', () => {
-      expect(
-        loadConfig(['mycompany', '--hc-resource-scheme', 'fruggr-wiki']).hcResourceScheme,
-      ).toBe('fruggr-wiki');
+      expect(loadConfig(['mycompany', '--hc-resource-scheme', 'acme-wiki']).hcResourceScheme).toBe(
+        'acme-wiki',
+      );
       expect(loadConfig(['mycompany', '--hc-resource-scheme', 'z6+x.y-w']).hcResourceScheme).toBe(
         'z6+x.y-w',
       );

@@ -48,7 +48,7 @@ A project-scoped `.mcp.json` is committed at the repo root:
       "command": "pnpm",
       "args": ["exec", "tsx", "src/index.ts", "--mode", "all"],
       "env": {
-        "ZENDESK_SUBDOMAIN": "fruggr"
+        "ZENDESK_SUBDOMAIN": "acme"
       }
     }
   }
@@ -60,7 +60,7 @@ A project-scoped `.mcp.json` is committed at the repo root:
 - `--mode all` exposes every individual tool so you can call any operation
   directly. Drop it for the default `namespace` mode, or pass
   `--read-only` / `--namespace <ns>` to scope the surface.
-- `ZENDESK_SUBDOMAIN` is set in the file (`fruggr`) since it is not a secret;
+- `ZENDESK_SUBDOMAIN` is set in the file (`acme`) since it is not a secret;
   the OAuth access token (`ZENDESK_OAUTH_TOKEN`) still comes from the environment
   (see auth note above) and is never stored in the file.
 

@@ -78,7 +78,7 @@ The OAuth token is persisted to an owner-only (`0600`) file in your OS config
 dir, one per subdomain, and reused across restarts, so this shouldn't happen:
 
 - `%APPDATA%\lincolnminto\zendesk-mcp-server\<subdomain>.json` on Windows;
-- `${XDG_CONFIG_HOME:-$HOME/.config}/fruggr/zendesk-mcp-server/<subdomain>.json`
+- `${XDG_CONFIG_HOME:-$HOME/.config}/lincolnminto/zendesk-mcp-server/<subdomain>.json`
   elsewhere.
 
 If the Zendesk OAuth client has token expiration enabled, the stored refresh

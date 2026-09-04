@@ -1033,7 +1033,7 @@ describe('ticket tools', () => {
       const tool = findTool('list_sla_policies');
       const result = await tool.handler({ per_page: 100, page: 1 });
       const text = result.content[0]?.text ?? '';
-      expect(text).toContain('SLA contractuels fruggr - Bugs/Incidents');
+      expect(text).toContain('SLA contractuels acme - Bugs/Incidents');
       expect(text).toContain('first_reply_time');
       expect(text).toContain('420 min');
       expect(text).toContain('type is incident');

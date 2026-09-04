@@ -241,7 +241,7 @@ export const registerCoreScenarios = (harness: IntegrationHarness): void => {
           arguments: {},
         });
         expect(result.isError).toBeFalsy();
-        expect(textOf(result)).toContain('SLA contractuels fruggr - Bugs/Incidents');
+        expect(textOf(result)).toContain('SLA contractuels acme - Bugs/Incidents');
       });
 
       it('exposes one proxy per namespace in "namespace" mode', async () => {

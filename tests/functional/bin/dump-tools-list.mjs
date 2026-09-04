@@ -52,7 +52,7 @@ if (!subdomain) {
   die(
     'ZENDESK_SUBDOMAIN is not set. See "Prerequisites (executor side)" in ' +
       'tests/functional/README.md for how to configure the reference Zendesk ' +
-      'instance (fruggr) locally.',
+      'instance (acme) locally.',
   );
 }
 if (!existsSync(serverEntry)) {

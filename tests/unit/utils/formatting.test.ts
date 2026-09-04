@@ -151,7 +151,7 @@ describe('formatSlaPolicy', () => {
         ),
       }),
     ).toMatchInlineSnapshot(`
-      "## SLA policy: SLA contractuels fruggr - Bugs/Incidents (123)
+      "## SLA policy: SLA contractuels acme - Bugs/Incidents (123)
       - **Description**: Contractual SLA for bugs and incidents
       - **Position**: 1
       - **Conditions**: all: type is incident; all: custom_status_id includes ["1","2"]; all: assignee_id is; any: priority is urgent; any: group_id is
@@ -170,7 +170,7 @@ describe('formatSlaPolicy', () => {
         policy_metrics: [],
       }),
     ).toMatchInlineSnapshot(`
-      "## SLA policy: SLA contractuels fruggr - Bugs/Incidents (123)
+      "## SLA policy: SLA contractuels acme - Bugs/Incidents (123)
       - **Position**: 1"
     `);
   });

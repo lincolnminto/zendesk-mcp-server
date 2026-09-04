@@ -4,7 +4,7 @@
       "command": "pnpm",
       "args": ["exec", "tsx", "src/index.ts", "--mode", "all", "--dev"],
       "env": {
-        "ZENDESK_SUBDOMAIN": "fruggr"
+        "ZENDESK_SUBDOMAIN": "acme"
       }
     }
   }

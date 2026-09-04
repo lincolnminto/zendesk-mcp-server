@@ -207,3 +207,13 @@ Fully automated via semantic-release on push to `main`; never hand-bump
 `version` in `package.json` or the version-controlled `server.json` — release
 syncs both. Reseed `server.json` with `pnpm build:server-json` when its metadata
 changes. Details: `docs/release-automation.md`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context layout (`CONTEXT.md` + `docs/decisions/` at the repo root). See `docs/agents/domain.md`.
