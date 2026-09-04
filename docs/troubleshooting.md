@@ -77,7 +77,7 @@ OAuth client.
 The OAuth token is persisted to an owner-only (`0600`) file in your OS config
 dir, one per subdomain, and reused across restarts, so this shouldn't happen:
 
-- `%APPDATA%\fruggr\zendesk-mcp-server\<subdomain>.json` on Windows;
+- `%APPDATA%\lincolnminto\zendesk-mcp-server\<subdomain>.json` on Windows;
 - `${XDG_CONFIG_HOME:-$HOME/.config}/fruggr/zendesk-mcp-server/<subdomain>.json`
   elsewhere.
 

@@ -31,7 +31,7 @@ describe('server.json (version-controlled MCP registry manifest)', () => {
 
   it('derives the server name from package.json#mcpName', () => {
     expect(serverJson.name).toBe(pkg.mcpName);
-    expect(serverJson.name).toBe('io.github.fruggr/zendesk-mcp-server');
+    expect(serverJson.name).toBe('io.github.lincolnminto/zendesk-mcp-server');
   });
 
   it('keeps the committed version in sync with package.json (no drift)', () => {
@@ -46,10 +46,10 @@ describe('server.json (version-controlled MCP registry manifest)', () => {
 
   it('derives the repository pointer and website from package.json', () => {
     expect(serverJson.repository).toEqual({
-      url: 'https://github.com/fruggr/zendesk-mcp-server',
+      url: 'https://github.com/lincolnminto/zendesk-mcp-server',
       source: 'github',
       // Stable numeric repo id — keeps the registry entry valid across renames.
-      id: '1206027556',
+      id: '1357178965',
     });
     expect(serverJson.websiteUrl).toBe(pkg.homepage);
   });

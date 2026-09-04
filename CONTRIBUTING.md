@@ -1,8 +1,8 @@
 # Contributing
 
-[![Mutation score](https://img.shields.io/endpoint?style=flat&url=https%3A%2F%2Fbadge-api.stryker-mutator.io%2Fgithub.com%2Ffruggr%2Fzendesk-mcp-server%2Fmain)](https://dashboard.stryker-mutator.io/reports/github.com/fruggr/zendesk-mcp-server/main)
+[![Mutation score](https://img.shields.io/endpoint?style=flat&url=https%3A%2F%2Fbadge-api.stryker-mutator.io%2Fgithub.com%2Flincolnminto%2Fzendesk-mcp-server%2Fmain)](https://dashboard.stryker-mutator.io/reports/github.com/lincolnminto/zendesk-mcp-server/main)
 
-Thanks for considering a contribution to `@fruggr/zendesk-mcp-server`. See the
+Thanks for considering a contribution to `@lincolnminto/zendesk-mcp-server`. See the
 [README](README.md) for what the project does and how to run it.
 
 The badge is `main`'s mutation score; it links to the browsable report, where
@@ -44,7 +44,7 @@ and runs the smoke test to keep that promise honest.
 
 ```bash
 # Clone, install, build
-git clone https://github.com/fruggr/zendesk-mcp-server.git
+git clone https://github.com/lincolnminto/zendesk-mcp-server.git
 cd zendesk-mcp-server && pnpm install && pnpm build
 node dist/index.js <your-subdomain>
 
@@ -64,8 +64,8 @@ pnpm build && pnpm typecheck && pnpm check && pnpm test
 To test a PR branch without publishing to npm (the `prepare` script builds on install):
 
 ```bash
-npx -y github:fruggr/zendesk-mcp-server <your-subdomain>
-npx -y github:fruggr/zendesk-mcp-server#my-feature-branch <your-subdomain>
+npx -y github:lincolnminto/zendesk-mcp-server <your-subdomain>
+npx -y github:lincolnminto/zendesk-mcp-server#my-feature-branch <your-subdomain>
 ```
 
 Architecture, code style, submission bar and release workflow live in

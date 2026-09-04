@@ -49,7 +49,7 @@ const context = {
   ],
   lastRelease: { version: '1.0.0', gitTag: 'v1.0.0', gitHead: '0000000' },
   nextRelease: { version: '1.1.0', gitTag: 'v1.1.0', type: 'minor', gitHead: 'eeeeeee' },
-  options: { repositoryUrl: 'https://github.com/fruggr/zendesk-mcp-server' },
+  options: { repositoryUrl: 'https://github.com/lincolnminto/zendesk-mcp-server' },
   cwd: process.cwd(),
   env: {},
   logger: { log: () => {}, error: () => {} },
