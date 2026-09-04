@@ -167,6 +167,20 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
+For the stdio [API-token escape hatch](docs/api-token-stdio.md) instead of OAuth (headless/CI only), add an `env` block:
+
+```json
+{
+  "mcpServers": {
+    "zendesk": {
+      "command": "npx",
+      "args": ["-y", "@fruggr/zendesk-mcp-server", "<your-subdomain>", "--mode", "single"],
+      "env": { "ZENDESK_EMAIL": "you@company.com", "ZENDESK_API_TOKEN": "your_token" }
+    }
+  }
+}
+```
+
 </details>
 
 <details>
@@ -174,6 +188,13 @@ Add to your `claude_desktop_config.json`:
 
 ```bash
 claude mcp add zendesk -- npx -y @fruggr/zendesk-mcp-server <your-subdomain> --mode single
+```
+
+For the stdio [API-token escape hatch](docs/api-token-stdio.md) instead of OAuth (headless/CI only), pass the credentials with `-e`:
+
+```bash
+claude mcp add zendesk -e ZENDESK_EMAIL=you@company.com -e ZENDESK_API_TOKEN=your_token \
+  -- npx -y @fruggr/zendesk-mcp-server <your-subdomain> --mode single
 ```
 
 </details>
@@ -189,6 +210,20 @@ Add to your `.vscode/mcp.json`:
     "zendesk": {
       "command": "npx",
       "args": ["-y", "@fruggr/zendesk-mcp-server", "<your-subdomain>", "--mode", "single"]
+    }
+  }
+}
+```
+
+For the stdio [API-token escape hatch](docs/api-token-stdio.md) instead of OAuth (headless/CI only), add an `env` block:
+
+```json
+{
+  "servers": {
+    "zendesk": {
+      "command": "npx",
+      "args": ["-y", "@fruggr/zendesk-mcp-server", "<your-subdomain>", "--mode", "single"],
+      "env": { "ZENDESK_EMAIL": "you@company.com", "ZENDESK_API_TOKEN": "your_token" }
     }
   }
 }

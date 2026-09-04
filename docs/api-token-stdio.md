@@ -19,3 +19,5 @@ In stdio mode the credentials never leave the local machine, so an API token is 
    ```
 
 If both `ZENDESK_EMAIL` and `ZENDESK_API_TOKEN` are set when stdio starts, the server uses API token authentication. Otherwise it uses OAuth 2.1 PKCE (the recommended path). Setting only one of the two is treated as a harmless stray variable, not an error — it falls back to OAuth.
+
+To wire these into an MCP client's config instead of invoking the binary by hand, add them as an `env` block (Claude Desktop, VS Code) or via `-e` (Claude Code): see [MCP client wiring](../README.md#mcp-client-wiring) in the README, which shows both the OAuth and the API-token form per client.
