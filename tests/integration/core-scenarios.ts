@@ -320,6 +320,20 @@ export const registerCoreScenarios = (harness: IntegrationHarness): void => {
         expect(textOf(result)).toContain('**status**: new → open');
       });
 
+      it("reads a ticket's relationships over the wire with --tool get_ticket_relations alone", async () => {
+        connected = await harness.connect(makeConfig({ tools: ['get_ticket_relations'] }));
+        expect(toolNames((await connected.client.listTools()).tools)).toEqual([
+          'get_ticket_relations',
+        ]);
+        const result = await connected.client.callTool({
+          name: 'get_ticket_relations',
+          arguments: { ticket_id: 1 },
+        });
+
+        expect(result.isError).toBeFalsy();
+        expect(textOf(result)).toContain('# Relationships of ticket #1');
+      });
+
       it("reads a ticket's comment thread newest-first over the wire", async () => {
         connected = await harness.connect(makeConfig({ mode: 'all' }));
         const result = await connected.client.callTool({

@@ -22,6 +22,7 @@ const toolsDir = join(thisDir, '..', 'tools');
 // there need a full restart. Keep this list in sync with createAllTools.
 const TOOL_MODULES = [
   { file: 'tickets.ts', factory: 'createTicketTools' },
+  { file: 'ticket-relations.ts', factory: 'createTicketRelationTools' },
   { file: 'search.ts', factory: 'createSearchTools' },
   { file: 'help-center.ts', factory: 'createHelpCenterTools' },
   { file: 'users.ts', factory: 'createUserTools' },

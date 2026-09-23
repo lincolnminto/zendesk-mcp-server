@@ -21,6 +21,7 @@ out every `write` tool before the proxies are built.
 | `search_tickets` | Search tickets using Zendesk query syntax, with per-result SLA state | read |
 | `list_tickets` | List tickets with cursor-based pagination | read |
 | `get_linked_incidents` | Get incidents linked to a problem ticket | read |
+| `get_ticket_relations` | List the tickets a ticket is linked to: the closed ticket it follows up, the follow-ups created from it, an incident's problem ticket (and, for a problem, a pointer to `get_linked_incidents`) | read |
 | `list_sla_policies` | List SLA policies with filter conditions and per-priority targets (requires an admin token, or a custom role with the SLA-management permission) | read |
 | `list_ticket_fields` | List ticket field definitions (system + custom) with ids, types, and dropdown/multiselect option values, to resolve `custom_fields` ids and accepted values for create_ticket / update_ticket | read |
 | `list_views` | List the agent's active views (saved ticket queues) with best-effort (cached, may show "(count updating)") ticket counts, to see where the workload sits before opening a queue | read |
