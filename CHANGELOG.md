@@ -1,3 +1,21 @@
+## [2.24.0](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.23.0...v2.24.0) (2026-11-05)
+
+### Features
+
+* **tickets:** attach local files by path in add_private_note and add_public_comment ([22cda9f](https://github.com/lincolnminto/zendesk-mcp-server/commit/22cda9f72f0f2ffd8d147c4cb9544a914dc6f0fa))
+
+<details>
+<summary>🔧 Internal changes (chore, ci, build, refactor, tests, docs…)</summary>
+
+### Chores
+
+* sync server.json version with package.json ([4bfe701](https://github.com/lincolnminto/zendesk-mcp-server/commit/4bfe70107d3a9261e61d401618834e8daa73f27a))
+
+### Continuous Integration
+
+* **release:** release the fork with GITHUB_TOKEN and npm trusted publishing ([#4](https://github.com/lincolnminto/zendesk-mcp-server/issues/4)) ([99945bd](https://github.com/lincolnminto/zendesk-mcp-server/commit/99945bd108e723933f6dfb343ccca6873409bd21))
+</details>
+
 ## [2.20.0](https://github.com/fruggr/zendesk-mcp-server/compare/v2.19.0...v2.20.0) (2026-09-04)
 
 ### Features
