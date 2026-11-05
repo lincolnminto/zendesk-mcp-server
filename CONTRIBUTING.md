@@ -243,10 +243,8 @@ Versions follow [SemVer](https://semver.org/) and are calculated
 merge to `main` triggers
 [semantic-release](https://github.com/semantic-release/semantic-release), which
 inspects the Conventional Commits since the previous tag, computes the next
-version, updates [`CHANGELOG.md`](CHANGELOG.md), publishes to npm, creates the
-matching GitHub Release, and mirrors it into the [official MCP
-registry](https://registry.modelcontextprotocol.io) so registry-driven clients
-discover the new version automatically.
+version, updates [`CHANGELOG.md`](CHANGELOG.md), publishes to npm and creates
+the matching GitHub Release.
 
 | Commit type | Resulting bump |
 |---|---|
@@ -255,6 +253,6 @@ discover the new version automatically.
 | `feat!:`, `fix!:`, or a `BREAKING CHANGE:` footer | major |
 | `docs:`, `chore:`, `refactor:`, `test:`, `ci:`, `style:`, `build:` | no release |
 
-The full pipeline, covering Renovate, the release gating and the registry
+The full pipeline, covering Renovate, the release flow and the registry
 manifest, is in [`docs/release-automation.md`](docs/release-automation.md); the
 short rules for agents are in [Release workflow](AGENTS.md#release-workflow).
