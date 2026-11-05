@@ -4,18 +4,18 @@ import { describe, expect, it } from 'vitest';
 /**
  * Guard for the release loop-breaker.
  *
- * `release.yml` authenticates as a GitHub App so it can push the
- * `chore(release)` commit past the ruleset on `main`. An App installation token
- * is a third-party identity, so its pushes DO start workflow runs — the
- * platform exemption that makes the built-in `GITHUB_TOKEN` safe here does not
- * apply to it. The only thing stopping every release from re-triggering Release
- * (and Mutation testing's full-scope job) is the `[skip ci]` marker in the
- * `@semantic-release/git` commit message template.
+ * On this fork `release.yml` pushes the `chore(release)` commit with the
+ * built-in `GITHUB_TOKEN`, whose pushes start no workflow run. That exemption
+ * does not hold for a GitHub App installation token — the identity upstream
+ * needs to get past a ruleset on `main`, and the one this fork would need if it
+ * ever adds one. With such a token the only thing stopping every release from
+ * re-triggering Release (and Mutation testing's full-scope job) is the
+ * `[skip ci]` marker in the `@semantic-release/git` commit message template.
  *
  * Nothing else would catch its removal. The release itself would still succeed,
  * just pay for a duplicate pipeline on every version, with the cause several
- * files away from the symptom. Hence this assertion. Why the App token is
- * needed at all: `docs/release-automation.md` (Admin prerequisites).
+ * files away from the symptom. Hence this assertion. Release identity and its
+ * prerequisites: `docs/release-automation.md` (Admin prerequisites).
  */
 
 const rc = JSON.parse(readFileSync(new URL('../../.releaserc.json', import.meta.url), 'utf8')) as {
