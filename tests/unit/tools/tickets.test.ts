@@ -1,5 +1,8 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { HttpResponse, http } from 'msw';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { CHARACTER_LIMIT } from '../../../src/constants';
 import type { ToolContext } from '../../../src/tools/definitions';
 import { createTicketTools } from '../../../src/tools/tickets';
@@ -1263,6 +1266,331 @@ describe('ticket tools', () => {
         'comment'
       ] as Record<string, unknown>;
       expect(comment['uploads']).toEqual(['mock-upload-token']);
+    });
+  });
+
+  describe('attachment_paths (files the server reads from disk)', () => {
+    // Local reads are opt-in on the context, as createMcpServer wires it for
+    // stdio. The file-level `ctx` carries no flag, which is how HTTP runs.
+    const localCtx: ToolContext = { ...ctx, localFileAccess: true };
+    const findLocalTool = (name: string) => {
+      const tool = createTicketTools(localCtx).find((t) => t.name === name);
+      if (!tool) throw new Error(`Tool ${name} not found`);
+      return tool;
+    };
+
+    let dir = '';
+    beforeAll(async () => {
+      dir = await mkdtemp(join(tmpdir(), 'zendesk-mcp-attach-'));
+    });
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const writeTemp = async (name: string, content: string): Promise<string> => {
+      const filePath = join(dir, name);
+      await writeFile(filePath, content);
+      return filePath;
+    };
+
+    // Records every upload and every comment PUT, so a test can assert both
+    // what reached Zendesk and, on a refusal, that nothing did.
+    const captureWrites = () => {
+      const uploads: Array<{
+        filename: string | null;
+        token: string | null;
+        contentType: string | null;
+        body: string;
+      }> = [];
+      const puts: Record<string, unknown>[] = [];
+      mswServer.use(
+        http.post('https://testsubdomain.zendesk.com/api/v2/uploads', async ({ request }) => {
+          const url = new URL(request.url);
+          uploads.push({
+            filename: url.searchParams.get('filename'),
+            token: url.searchParams.get('token'),
+            contentType: request.headers.get('content-type'),
+            body: Buffer.from(await request.arrayBuffer()).toString('utf8'),
+          });
+          return HttpResponse.json({ upload: MOCK_UPLOAD });
+        }),
+        http.put(
+          'https://testsubdomain.zendesk.com/api/v2/tickets/:id',
+          async ({ request, params }) => {
+            puts.push((await request.json()) as Record<string, unknown>);
+            return HttpResponse.json({ ticket: { ...MOCK_TICKET, id: Number(params['id']) } });
+          },
+        ),
+      );
+      return { uploads, puts };
+    };
+
+    const commentOf = (put: Record<string, unknown> | undefined) =>
+      ((put as Record<string, unknown>)['ticket'] as Record<string, unknown>)['comment'];
+
+    // The error names the temp dir, which is random per run: mask it so the
+    // message can be pinned exactly.
+    const rejectionOf = async (call: Promise<unknown>): Promise<string> => {
+      try {
+        await call;
+      } catch (error) {
+        return (error as Error).message.replaceAll(dir, '<tmp>');
+      }
+      throw new Error('expected the call to reject');
+    };
+
+    it('uploads a file read from an absolute path, named after its basename, on a private note', async () => {
+      const filePath = await writeTemp('trace.log', 'stack trace here');
+      const writes = captureWrites();
+      const result = await findLocalTool('add_private_note').handler({
+        ticket_id: 7,
+        body: 'See log',
+        attachment_paths: [filePath],
+      });
+      expect(result.content[0]?.text).toMatchInlineSnapshot(
+        `"Private note added to ticket #7 with 1 attachment(s)."`,
+      );
+      expect(writes.uploads).toEqual([
+        { filename: 'trace.log', token: null, contentType: 'text/plain', body: 'stack trace here' },
+      ]);
+      expect(commentOf(writes.puts[0])).toEqual({
+        body: 'See log',
+        public: false,
+        uploads: ['mock-upload-token'],
+      });
+    });
+
+    it('combines base64 attachments and paths under one token, base64 first, and counts them all', async () => {
+      const pdf = await writeTemp('report.pdf', '%PDF-fake');
+      const sql = await writeTemp('query.sql', 'select 1;');
+      const writes = captureWrites();
+      const result = await findLocalTool('add_public_comment').handler({
+        ticket_id: 1,
+        body: 'Attached',
+        attachments: [
+          {
+            file_name: 'inline.txt',
+            file_base64: Buffer.from('inline').toString('base64'),
+            content_type: 'text/plain',
+          },
+        ],
+        attachment_paths: [pdf, sql],
+      });
+      expect(result.content[0]?.text).toMatchInlineSnapshot(
+        `"Public comment added to ticket #1 with 3 attachment(s)."`,
+      );
+      expect(writes.uploads).toEqual([
+        { filename: 'inline.txt', token: null, contentType: 'text/plain', body: 'inline' },
+        {
+          filename: 'report.pdf',
+          token: 'mock-upload-token',
+          contentType: 'application/pdf',
+          body: '%PDF-fake',
+        },
+        {
+          filename: 'query.sql',
+          token: 'mock-upload-token',
+          contentType: 'application/sql',
+          body: 'select 1;',
+        },
+      ]);
+      expect(writes.puts).toHaveLength(1);
+      expect(commentOf(writes.puts[0])).toEqual({
+        body: 'Attached',
+        public: true,
+        uploads: ['mock-upload-token'],
+      });
+    });
+
+    it('infers the content type from the extension, case-insensitively, defaulting to octet-stream', async () => {
+      const names = [
+        'a.png',
+        'b.jpg',
+        'c.JPEG',
+        'd.gif',
+        'e.webp',
+        'f.pdf',
+        'g.txt',
+        'h.log',
+        'i.csv',
+        'j.json',
+        'k.xml',
+        'l.html',
+        'm.md',
+        'n.sql',
+        'o.zip',
+        'p.bin',
+        'no-extension',
+      ];
+      const paths = await Promise.all(names.map((name) => writeTemp(name, name)));
+      const writes = captureWrites();
+      await findLocalTool('add_private_note').handler({
+        ticket_id: 1,
+        body: 'types',
+        attachment_paths: paths,
+      });
+      expect(writes.uploads.map((u) => [u.filename, u.contentType])).toEqual([
+        ['a.png', 'image/png'],
+        ['b.jpg', 'image/jpeg'],
+        ['c.JPEG', 'image/jpeg'],
+        ['d.gif', 'image/gif'],
+        ['e.webp', 'image/webp'],
+        ['f.pdf', 'application/pdf'],
+        ['g.txt', 'text/plain'],
+        ['h.log', 'text/plain'],
+        ['i.csv', 'text/csv'],
+        ['j.json', 'application/json'],
+        ['k.xml', 'application/xml'],
+        ['l.html', 'text/html'],
+        ['m.md', 'text/markdown'],
+        ['n.sql', 'application/sql'],
+        ['o.zip', 'application/zip'],
+        ['p.bin', 'application/octet-stream'],
+        ['no-extension', 'application/octet-stream'],
+      ]);
+    });
+
+    it('rejects a relative path and posts nothing', async () => {
+      const writes = captureWrites();
+      const message = await rejectionOf(
+        findLocalTool('add_private_note').handler({
+          ticket_id: 1,
+          body: 'x',
+          attachment_paths: ['logs/app.log'],
+        }),
+      );
+      expect(message).toMatchInlineSnapshot(`
+        "attachment_paths rejected; nothing was uploaded or posted:
+        - logs/app.log: not an absolute path; pass the full path to the file"
+      `);
+      expect(writes.uploads).toHaveLength(0);
+      expect(writes.puts).toHaveLength(0);
+    });
+
+    it('rejects a missing file before uploading the valid files listed before it', async () => {
+      const good = await writeTemp('good.txt', 'fine');
+      const writes = captureWrites();
+      const message = await rejectionOf(
+        findLocalTool('add_public_comment').handler({
+          ticket_id: 1,
+          body: 'x',
+          attachments: [{ file_name: 'a.txt', file_base64: 'aGk=', content_type: 'text/plain' }],
+          attachment_paths: [good, join(dir, 'missing.log')],
+        }),
+      );
+      expect(message).toMatchInlineSnapshot(`
+        "attachment_paths rejected; nothing was uploaded or posted:
+        - <tmp>/missing.log: file not found"
+      `);
+      expect(writes.uploads).toHaveLength(0);
+      expect(writes.puts).toHaveLength(0);
+    });
+
+    it('lists every unusable path at once: a directory, a relative path, a missing file, an unreadable one', async () => {
+      const file = await writeTemp('plain.txt', 'a file, not a directory');
+      const writes = captureWrites();
+      const message = await rejectionOf(
+        findLocalTool('add_private_note').handler({
+          ticket_id: 1,
+          body: 'x',
+          // A path "through" a regular file fails stat with ENOTDIR: the
+          // deterministic stand-in for any read error other than not-found.
+          attachment_paths: [dir, 'relative.txt', join(dir, 'gone.png'), join(file, 'child')],
+        }),
+      );
+      expect(message).toMatchInlineSnapshot(`
+        "attachment_paths rejected; nothing was uploaded or posted:
+        - <tmp>: not a regular file
+        - relative.txt: not an absolute path; pass the full path to the file
+        - <tmp>/gone.png: file not found
+        - <tmp>/plain.txt/child: cannot be read (ENOTDIR)"
+      `);
+      expect(writes.uploads).toHaveLength(0);
+      expect(writes.puts).toHaveLength(0);
+    });
+
+    it('refuses paths when the context does not allow local reads (HTTP), posting nothing', async () => {
+      const filePath = await writeTemp('secret.txt', 'server-side file');
+      const writes = captureWrites();
+      const message = await rejectionOf(
+        findTool('add_private_note').handler({
+          ticket_id: 1,
+          body: 'x',
+          attachment_paths: [filePath],
+        }),
+      );
+      expect(message).toMatchInlineSnapshot(
+        `"attachment_paths is not available over the HTTP transport: the paths would be read on the server host, not on your machine. Send the files with attachments (base64) instead."`,
+      );
+      expect(writes.uploads).toHaveLength(0);
+      expect(writes.puts).toHaveLength(0);
+    });
+
+    it('treats an empty attachment_paths as no attachment, even without local access', async () => {
+      const writes = captureWrites();
+      const result = await findTool('add_public_comment').handler({
+        ticket_id: 1,
+        body: 'plain',
+        attachment_paths: [],
+      });
+      expect(result.content[0]?.text).toMatchInlineSnapshot(`"Public comment added to ticket #1."`);
+      expect(writes.uploads).toHaveLength(0);
+      expect(commentOf(writes.puts[0])).toEqual({ body: 'plain', public: true });
+    });
+
+    it('rejects an empty path string at the schema', () => {
+      const tool = findLocalTool('add_private_note');
+      const result = tool.inputSchema.safeParse({
+        ticket_id: 1,
+        body: 'x',
+        attachment_paths: [''],
+      });
+      expect(result.success).toBe(false);
+    });
+
+    describe('ZENDESK_MAX_UPLOAD_BYTES', () => {
+      // The cap is read from process.env at module load, so the override must
+      // be stubbed before a fresh import of the tool module.
+      afterEach(() => {
+        vi.unstubAllEnvs();
+        vi.resetModules();
+      });
+
+      const loadNoteTool = async () => {
+        vi.resetModules();
+        vi.stubEnv('ZENDESK_MAX_UPLOAD_BYTES', '8');
+        // Aliased: the freshly re-imported module, not the top-level import.
+        const { createTicketTools: createTicketToolsFresh } = await import(
+          '../../../src/tools/tickets'
+        );
+        const tool = createTicketToolsFresh(localCtx).find((t) => t.name === 'add_private_note');
+        if (!tool) throw new Error('add_private_note not found');
+        return tool;
+      };
+
+      it('rejects a file over the cap and posts nothing', async () => {
+        const big = await writeTemp('big.log', '123456789');
+        const writes = captureWrites();
+        const tool = await loadNoteTool();
+        const message = await rejectionOf(
+          tool.handler({ ticket_id: 1, body: 'x', attachment_paths: [big] }),
+        );
+        expect(message).toMatchInlineSnapshot(`
+          "attachment_paths rejected; nothing was uploaded or posted:
+          - <tmp>/big.log: 9 bytes, over the 8-byte limit per file (ZENDESK_MAX_UPLOAD_BYTES)"
+        `);
+        expect(writes.uploads).toHaveLength(0);
+        expect(writes.puts).toHaveLength(0);
+      });
+
+      it('accepts a file exactly at the cap', async () => {
+        const fits = await writeTemp('fits.log', '12345678');
+        const writes = captureWrites();
+        const tool = await loadNoteTool();
+        await tool.handler({ ticket_id: 1, body: 'x', attachment_paths: [fits] });
+        expect(writes.uploads.map((u) => u.body)).toEqual(['12345678']);
+        expect(writes.puts).toHaveLength(1);
+      });
     });
   });
 

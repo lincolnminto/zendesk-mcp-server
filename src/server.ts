@@ -436,7 +436,11 @@ export const createMcpServer = (
   onUnauthorized?: () => void,
 ): McpServer => {
   const server = createServerShell(config, logger);
-  const tools = createAllTools({ subdomain: config.subdomain, getToken });
+  const tools = createAllTools({
+    subdomain: config.subdomain,
+    getToken,
+    localFileAccess: config.transport === 'stdio',
+  });
   registerToolset(server, { config, getToken, onUnauthorized, logger }, tools);
   return server;
 };

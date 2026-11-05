@@ -144,7 +144,7 @@ Three deliberate exceptions:
   `<subdomain>` alongside an empty `ZENDESK_SUBDOMAIN`. Validation applies to
   the value the server actually uses.
 - The **numeric tuning caps** — `ZENDESK_CHARACTER_LIMIT`,
-  `ZENDESK_MAX_ATTACHMENT_BYTES`, `ZENDESK_MAX_EMBEDDED_IMAGES`,
+  `ZENDESK_MAX_ATTACHMENT_BYTES`, `ZENDESK_MAX_UPLOAD_BYTES`, `ZENDESK_MAX_EMBEDDED_IMAGES`,
   `ZENDESK_MAX_COMMENT_PAGES`, `ZENDESK_REORDER_CONFIRM_THRESHOLD` and
   `ZENDESK_ARTICLE_RESOURCES_SCAN_MAX_PAGES` — read through a shared parser that
   treats an empty value as unset and falls back to the default, along with any
@@ -244,6 +244,11 @@ ZENDESK_CHARACTER_LIMIT=2000 pnpm dev -- <your-subdomain> --mode all
 **Required:** no · **Default:** `5242880` (5 MB)
 
 Per-image size cap for inline (multimodal) ticket attachments. Images larger than this are returned as text references instead of embedded image content. The default is aligned with the Anthropic vision API per-image limit.
+
+### `ZENDESK_MAX_UPLOAD_BYTES`
+**Required:** no · **Default:** `52428800` (50 MiB)
+
+Per-file size cap for the files `add_private_note` and `add_public_comment` read from disk (`attachment_paths`). The default is Zendesk's attachment size limit. Every path is checked before anything is uploaded, so one file over the cap fails the call with nothing uploaded or posted. `attachment_paths` itself is **stdio only**: over HTTP a path would resolve on the server host, so the tools refuse it there.
 
 ### `ZENDESK_MAX_EMBEDDED_IMAGES`
 **Required:** no · **Default:** `10`

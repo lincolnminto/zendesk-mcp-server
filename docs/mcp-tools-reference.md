@@ -29,8 +29,8 @@ out every `write` tool before the proxies are built.
 | `list_macros` | List the active macros available to the authenticated user, with each macro's id, title, scope, and ordered actions | read |
 | `create_ticket` | Create a new ticket with subject, description, priority, tags... | write |
 | `update_ticket` | Update ticket status, priority, assignee, tags, custom fields | write |
-| `add_private_note` | Add an internal note (not visible to requester), optionally with file attachments | write |
-| `add_public_comment` | Add a public comment (visible to requester), optionally with file attachments | write |
+| `add_private_note` | Add an internal note (not visible to requester), optionally with file attachments: base64 in `attachments`, or files the server reads from disk by absolute path in `attachment_paths` (stdio only; every path is checked before anything is uploaded or posted) | write |
+| `add_public_comment` | Add a public comment (visible to requester), optionally with file attachments, as base64 or as `attachment_paths` (same rules as `add_private_note`) | write |
 | `manage_tags` | Add or remove tags on a ticket | write |
 | `preview_macro_diff` | Preview a macro's changes to a ticket as a before → after diff (only changed fields + reply), without saving; commit via update_ticket / add_public_comment / add_private_note | write |
 

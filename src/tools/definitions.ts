@@ -37,4 +37,11 @@ export interface ToolDefinition {
 export interface ToolContext {
   subdomain: string;
   getToken: () => string | Promise<string>;
+  /**
+   * Whether a tool may read a file from a path the caller names (the comment
+   * tools' `attachment_paths`). True only over stdio, where the server runs on
+   * the caller's machine. Over HTTP the path would resolve on the server host,
+   * handing every remote caller the server's files, so absent means refused.
+   */
+  localFileAccess?: boolean;
 }

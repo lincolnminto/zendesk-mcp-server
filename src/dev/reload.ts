@@ -71,7 +71,11 @@ export const createReloadableServer = (
   loadTools: (ctx: ToolContext) => Promise<ToolDefinition[]> = loadFreshTools,
 ): { server: McpServer; reload: () => Promise<number> } => {
   const server = createServerShell(config, logger);
-  const ctx: ToolContext = { subdomain: config.subdomain, getToken };
+  const ctx: ToolContext = {
+    subdomain: config.subdomain,
+    getToken,
+    localFileAccess: config.transport === 'stdio',
+  };
   const params = { config, getToken, onUnauthorized, logger };
 
   // The last generation registered successfully — both the handle (to dispose)

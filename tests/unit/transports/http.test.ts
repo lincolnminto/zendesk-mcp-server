@@ -653,3 +653,60 @@ describe('startHttpTransport (Zendesk 401 backstop)', () => {
     await followUp.text();
   });
 });
+
+describe('startHttpTransport (attachment_paths refused)', () => {
+  let handle: Awaited<ReturnType<typeof startHttpTransport>> | undefined;
+
+  afterEach(async () => {
+    await handle?.close();
+    handle = undefined;
+  });
+
+  // Over HTTP a caller-named path would resolve on the server host, so any
+  // remote caller could post the server's own files to a ticket. The comment
+  // tools must refuse it before touching the disk or Zendesk.
+  it("refuses attachment_paths and never reads the server's disk or calls Zendesk", async () => {
+    const zendeskWrites: string[] = [];
+    mswServer.use(
+      http.post('https://testsubdomain.zendesk.com/api/v2/uploads', ({ request }) => {
+        zendeskWrites.push(request.url);
+        return HttpResponse.json({ upload: { token: 'never' } });
+      }),
+      http.put('https://testsubdomain.zendesk.com/api/v2/tickets/:id', ({ request }) => {
+        zendeskWrites.push(request.url);
+        return HttpResponse.json({ ticket: { id: 1 } });
+      }),
+    );
+    handle = await startHttpTransport(baseConfig);
+    const sessionId = await initializeSession(handle.port, 'Bearer client-issued-bearer');
+
+    const callRes = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer client-issued-bearer',
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'mcp-session-id': sessionId,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        id: 2,
+        params: {
+          name: 'add_private_note',
+          arguments: { ticket_id: 1, body: 'x', attachment_paths: ['/etc/hostname'] },
+        },
+      }),
+    });
+
+    expect(callRes.status).toBe(200);
+    const payload = parseFirstRpcPayload(await callRes.text()) as {
+      result?: { isError?: boolean; content?: Array<{ text?: string }> };
+    };
+    expect(payload.result?.isError).toBe(true);
+    expect(payload.result?.content?.[0]?.text).toContain(
+      'attachment_paths is not available over the HTTP transport',
+    );
+    expect(zendeskWrites).toEqual([]);
+  });
+});

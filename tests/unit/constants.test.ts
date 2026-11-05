@@ -93,3 +93,25 @@ describe('REORDER_CONFIRM_THRESHOLD (positiveIntEnv)', () => {
     expect(await load()).toBe(20);
   });
 });
+
+describe('MAX_UPLOAD_BYTES (positiveIntEnv)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const load = async () => (await import('../../src/constants')).MAX_UPLOAD_BYTES;
+
+  it("defaults to 50 MiB, Zendesk's per-file upload limit, when unset or empty", async () => {
+    vi.stubEnv('ZENDESK_MAX_UPLOAD_BYTES', '');
+    expect(await load()).toBe(52_428_800);
+  });
+
+  it('honors a valid positive integer', async () => {
+    vi.stubEnv('ZENDESK_MAX_UPLOAD_BYTES', '1048576');
+    expect(await load()).toBe(1_048_576);
+  });
+});

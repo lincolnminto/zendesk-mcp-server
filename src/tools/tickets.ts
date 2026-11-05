@@ -1,3 +1,5 @@
+import { readFile, stat } from 'node:fs/promises';
+import { basename, extname, isAbsolute } from 'node:path';
 import * as z from 'zod/v4';
 import {
   fetchZendeskBinary,
@@ -14,6 +16,7 @@ import {
   MAX_COMMENT_PAGES,
   MAX_EMBEDDED_IMAGE_COUNT,
   MAX_PAGE_SIZE,
+  MAX_UPLOAD_BYTES,
 } from '../constants';
 import type {
   PaginationMeta,
@@ -68,6 +71,78 @@ import type { ToolContext, ToolDefinition, ToolImageContent, ToolTextContent } f
 // The per-image cap in MB, for the skip message. Derived once: both operands
 // are module constants.
 const MAX_ATTACHMENT_MB = Number.parseFloat((MAX_ATTACHMENT_BYTES / (1024 * 1024)).toFixed(2));
+
+// A file bound for the Uploads API, whichever way the caller supplied it
+// (base64 in the call, or a path the server reads).
+interface UploadFile {
+  file_name: string;
+  data: Buffer;
+  content_type: string;
+}
+
+// Content types for the files a support agent typically attaches, by lowercase
+// extension. An unknown extension goes up as a generic binary, not a guess.
+const CONTENT_TYPE_BY_EXTENSION: ReadonlyMap<string, string> = new Map([
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.gif', 'image/gif'],
+  ['.webp', 'image/webp'],
+  ['.pdf', 'application/pdf'],
+  ['.txt', 'text/plain'],
+  ['.log', 'text/plain'],
+  ['.csv', 'text/csv'],
+  ['.json', 'application/json'],
+  ['.xml', 'application/xml'],
+  ['.html', 'text/html'],
+  ['.md', 'text/markdown'],
+  ['.sql', 'application/sql'],
+  ['.zip', 'application/zip'],
+]);
+
+const contentTypeOf = (filePath: string): string =>
+  CONTENT_TYPE_BY_EXTENSION.get(extname(filePath).toLowerCase()) ?? 'application/octet-stream';
+
+// Read one attachment_paths entry, or say why it cannot be used. A relative
+// path is refused rather than resolved: it would resolve against the server's
+// working directory, which the caller neither sees nor controls.
+const readLocalFile = async (
+  filePath: string,
+): Promise<{ file: UploadFile } | { problem: string }> => {
+  if (!isAbsolute(filePath)) {
+    return { problem: 'not an absolute path; pass the full path to the file' };
+  }
+  try {
+    const stats = await stat(filePath);
+    if (!stats.isFile()) return { problem: 'not a regular file' };
+    if (stats.size > MAX_UPLOAD_BYTES) {
+      return {
+        problem: `${stats.size} bytes, over the ${MAX_UPLOAD_BYTES}-byte limit per file (ZENDESK_MAX_UPLOAD_BYTES)`,
+      };
+    }
+    const data = await readFile(filePath);
+    return { file: { file_name: basename(filePath), data, content_type: contentTypeOf(filePath) } };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return { problem: code === 'ENOENT' ? 'file not found' : `cannot be read (${code})` };
+  }
+};
+
+// Read every attachment_paths entry before anything is uploaded. One unusable
+// path fails the whole call, listing every problem so the caller can fix them
+// in one retry, and no comment is left half-attached.
+const readLocalFiles = async (paths: readonly string[]): Promise<UploadFile[]> => {
+  const results = await Promise.all(paths.map(readLocalFile));
+  const problems = results.flatMap((result, i) =>
+    'problem' in result ? [`- ${paths[i]}: ${result.problem}`] : [],
+  );
+  if (problems.length > 0) {
+    throw new Error(
+      `attachment_paths rejected; nothing was uploaded or posted:\n${problems.join('\n')}`,
+    );
+  }
+  return results.flatMap((result) => ('file' in result ? [result.file] : []));
+};
 
 const formatReference = (attachment: ZendeskTicketAttachment): string =>
   `**${attachment.file_name}** (id ${attachment.id}, ${attachment.content_type}, ${attachment.size} bytes) — ${attachment.content_url}`;
@@ -645,7 +720,7 @@ const formatMacroPreviewDiff = (
 };
 
 export const createTicketTools = (ctx: ToolContext): ToolDefinition[] => {
-  const { subdomain, getToken } = ctx;
+  const { subdomain, getToken, localFileAccess } = ctx;
 
   const attachmentSchema = z.object({
     file_name: z.string().min(1).describe('File name, e.g. "app.log" or "screenshot.png".'),
@@ -658,17 +733,46 @@ export const createTicketTools = (ctx: ToolContext): ToolDefinition[] => {
   });
   type AttachmentInput = z.infer<typeof attachmentSchema>;
 
+  const attachmentPathsSchema = (target: 'note' | 'comment') =>
+    z
+      .array(z.string().min(1).describe('Absolute path, e.g. "/home/me/logs/app.log".'))
+      .optional()
+      .describe(
+        `Absolute paths of files to attach to this ${target}, read by the server from the machine it runs on (stdio only; refused over HTTP). Prefer this over attachments for any file already on disk: the call carries no base64. File name = the basename; content type inferred from the extension (unknown: application/octet-stream); at most ZENDESK_MAX_UPLOAD_BYTES per file (default 50 MiB). Every path is checked first: a missing, non-regular or oversize file fails the call with nothing uploaded or posted. Combinable with attachments, which upload first.`,
+      );
+
+  // Every file a comment carries, in upload order: base64 attachments first,
+  // then the files read from attachment_paths. Runs before getToken and before
+  // any upload, so an unusable path costs no request and leaves no trace.
+  const collectFiles = async (
+    attachments: AttachmentInput[] = [],
+    attachmentPaths: string[] = [],
+  ): Promise<UploadFile[]> => {
+    if (attachmentPaths.length > 0 && !localFileAccess) {
+      throw new Error(
+        'attachment_paths is not available over the HTTP transport: the paths would be read on the server host, not on your machine. Send the files with attachments (base64) instead.',
+      );
+    }
+    const fromDisk = await readLocalFiles(attachmentPaths);
+    const fromCall = attachments.map((file) => ({
+      file_name: file.file_name,
+      data: Buffer.from(file.file_base64, 'base64'),
+      content_type: file.content_type,
+    }));
+    return [...fromCall, ...fromDisk];
+  };
+
   // Upload each file via the Zendesk Uploads API, aggregating them under a single
   // upload token (the token from the first upload is passed to the next), and
   // return that token for use in a comment's `uploads` array.
-  const uploadAttachments = async (token: string, files: AttachmentInput[]): Promise<string> => {
+  const uploadAttachments = async (token: string, files: UploadFile[]): Promise<string> => {
     let uploadToken: string | undefined;
     for (const file of files) {
       const { upload } = await zendeskUpload<{ upload: ZendeskUpload }>(
         subdomain,
         token,
         file.file_name,
-        Buffer.from(file.file_base64, 'base64'),
+        file.data,
         file.content_type,
         uploadToken,
       );
@@ -1202,7 +1306,7 @@ export const createTicketTools = (ctx: ToolContext): ToolDefinition[] => {
       readOnly: false,
       title: 'Add Private Note',
       description:
-        'Add an internal note (not visible to requester) to a ticket, optionally with file attachments (uploaded via the Zendesk Uploads API and carried on the note). The note is appended to the ticket thread; use add_public_comment instead when the reply should be visible to the requester.',
+        'Add an internal note (not visible to requester) to a ticket, optionally with file attachments (uploaded via the Zendesk Uploads API and carried on the note). The note is appended to the ticket thread; use add_public_comment instead when the reply should be visible to the requester. Attach a file already on disk by its absolute path in attachment_paths (the server reads it, so no base64 goes in the call) rather than in attachments; if any path is unusable the call fails before anything is uploaded or posted. Returns a confirmation with the number of files attached.',
       inputSchema: z.object({
         ticket_id: z
           .number()
@@ -1219,7 +1323,10 @@ export const createTicketTools = (ctx: ToolContext): ToolDefinition[] => {
         attachments: z
           .array(attachmentSchema)
           .optional()
-          .describe('Files to attach to this note (base64-encoded content).'),
+          .describe(
+            'Files to attach to this note (base64-encoded content). For a file already on disk, use attachment_paths instead.',
+          ),
+        attachment_paths: attachmentPathsSchema('note'),
       }),
       annotations: {
         readOnlyHint: false,
@@ -1228,19 +1335,19 @@ export const createTicketTools = (ctx: ToolContext): ToolDefinition[] => {
         openWorldHint: true,
       },
       handler: async (params) => {
-        const { ticket_id, body, attachments } = params as {
+        const { ticket_id, body, attachments, attachment_paths } = params as {
           ticket_id: number;
           body: string;
           attachments?: AttachmentInput[];
+          attachment_paths?: string[];
         };
+        const files = await collectFiles(attachments, attachment_paths);
         const token = await getToken();
-        const uploads = attachments?.length
-          ? [await uploadAttachments(token, attachments)]
-          : undefined;
+        const uploads = files.length > 0 ? [await uploadAttachments(token, files)] : undefined;
         await zendeskPut(subdomain, token, `/tickets/${ticket_id}`, {
           ticket: { comment: { body, public: false, ...(uploads && { uploads }) } },
         });
-        const suffix = formatAttachmentSuffix(attachments?.length);
+        const suffix = formatAttachmentSuffix(files.length);
         return {
           content: [{ type: 'text', text: `Private note added to ticket #${ticket_id}${suffix}.` }],
         };
@@ -1252,7 +1359,7 @@ export const createTicketTools = (ctx: ToolContext): ToolDefinition[] => {
       readOnly: false,
       title: 'Add Public Comment',
       description:
-        'Add a public comment (visible to requester) to a ticket, optionally with file attachments (uploaded via the Zendesk Uploads API and carried on the comment). The comment is appended to the ticket thread and emails the requester; use add_private_note instead for an internal, agent-only note.',
+        'Add a public comment (visible to requester) to a ticket, optionally with file attachments (uploaded via the Zendesk Uploads API and carried on the comment). The comment is appended to the ticket thread and emails the requester; use add_private_note instead for an internal, agent-only note. Attach a file already on disk by its absolute path in attachment_paths (the server reads it, so no base64 goes in the call) rather than in attachments; if any path is unusable the call fails before anything is uploaded or posted. Returns a confirmation with the number of files attached.',
       inputSchema: z.object({
         ticket_id: z
           .number()
@@ -1269,7 +1376,10 @@ export const createTicketTools = (ctx: ToolContext): ToolDefinition[] => {
         attachments: z
           .array(attachmentSchema)
           .optional()
-          .describe('Files to attach to this comment (base64-encoded content).'),
+          .describe(
+            'Files to attach to this comment (base64-encoded content). For a file already on disk, use attachment_paths instead.',
+          ),
+        attachment_paths: attachmentPathsSchema('comment'),
       }),
       annotations: {
         readOnlyHint: false,
@@ -1278,19 +1388,19 @@ export const createTicketTools = (ctx: ToolContext): ToolDefinition[] => {
         openWorldHint: true,
       },
       handler: async (params) => {
-        const { ticket_id, body, attachments } = params as {
+        const { ticket_id, body, attachments, attachment_paths } = params as {
           ticket_id: number;
           body: string;
           attachments?: AttachmentInput[];
+          attachment_paths?: string[];
         };
+        const files = await collectFiles(attachments, attachment_paths);
         const token = await getToken();
-        const uploads = attachments?.length
-          ? [await uploadAttachments(token, attachments)]
-          : undefined;
+        const uploads = files.length > 0 ? [await uploadAttachments(token, files)] : undefined;
         await zendeskPut(subdomain, token, `/tickets/${ticket_id}`, {
           ticket: { comment: { body, public: true, ...(uploads && { uploads }) } },
         });
-        const suffix = formatAttachmentSuffix(attachments?.length);
+        const suffix = formatAttachmentSuffix(files.length);
         return {
           content: [
             { type: 'text', text: `Public comment added to ticket #${ticket_id}${suffix}.` },

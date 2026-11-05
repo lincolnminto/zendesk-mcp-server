@@ -72,6 +72,13 @@ export const DEFAULT_CALLBACK_PORT = 27439;
 // via ZENDESK_MAX_ATTACHMENT_BYTES (bytes).
 export const MAX_ATTACHMENT_BYTES = positiveIntEnv('ZENDESK_MAX_ATTACHMENT_BYTES', 5 * 1024 * 1024);
 
+// Per-file cap for files the comment tools read from disk (attachment_paths).
+// The default is Zendesk's attachment size limit (50 MB): a larger file would be
+// read into memory only to be refused by the Uploads API, after earlier files
+// had already gone up. Checking it before any upload keeps a call all-or-nothing.
+// Override via ZENDESK_MAX_UPLOAD_BYTES (bytes).
+export const MAX_UPLOAD_BYTES = positiveIntEnv('ZENDESK_MAX_UPLOAD_BYTES', 50 * 1024 * 1024);
+
 // Maximum number of images embedded as base64 in a single tool call. Remaining
 // images are returned as text references. Override via ZENDESK_MAX_EMBEDDED_IMAGES.
 export const MAX_EMBEDDED_IMAGE_COUNT = positiveIntEnv('ZENDESK_MAX_EMBEDDED_IMAGES', 10);
