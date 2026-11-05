@@ -30,24 +30,17 @@ semantic-release scans commits since the last release
         ├─ commit `feat: …`             → minor release
         ├─ commit `BREAKING CHANGE`     → major release
         └─ commit `chore(deps): …`      → ignored (no release)
-        │
-        ▼ (when a release was cut)
-Mirror the release into the official MCP registry
 ```
 
 The commit-type → release-level mapping lives in `.releaserc.json` (preset `conventionalcommits`).
 
-## MCP registry publishing
+## MCP registry manifest
 
-After semantic-release runs, the same `release.yml` job mirrors the release into
-the [official MCP registry](https://registry.modelcontextprotocol.io) under the
-name `io.github.lincolnminto/zendesk-mcp-server`, so registry-driven MCP clients pick up
-each new version automatically.
+This fork does **not** publish to the [official MCP
+registry](https://registry.modelcontextprotocol.io): the release stops at npm
+and the GitHub Release. The manifest the registry would read is still kept
+current, so listing the server there later is a publish away, not a rebuild.
 
-- **Gating.** `@semantic-release/npm` rewrites `package.json`'s `version` in the
-  working tree only when it actually publishes. The job snapshots the version
-  before and after semantic-release; the publish steps run **only** when it
-  changed, so `chore:` / `docs:` pushes (no release) never touch the registry.
 - **Manifest.** `server.json` is **version-controlled** at the repo root
   (committed and reviewable). [`scripts/build-server-json.mjs`](../scripts/build-server-json.mjs)
   *seeds* it from everything that already lives in `package.json` (name from
@@ -61,18 +54,13 @@ each new version automatically.
   [`scripts/sync-server-json-version.mjs`](../scripts/sync-server-json-version.mjs)
   to update **only** the `version` fields to `${nextRelease.version}`, and
   `@semantic-release/git` commits `server.json` alongside `CHANGELOG.md` and
-  `package.json`. The release commit therefore carries a clean one-line version
-  diff, and `package.json` / `server.json` versions can never diverge. The
-  MCP-registry publish step reads this committed, freshly-bumped file directly;
-  there is no generate-from-scratch step in the release job.
-- **Ownership.** The registry proves npm ownership via the `mcpName` field in
-  `package.json` (which the generator uses as the `server.json` `name`).
-- **Auth.** `mcp-publisher login github-oidc` reuses the workflow's
-  `id-token: write` GitHub OIDC token, the same permission npm Trusted
-  Publishing already relies on. No new secret, and the `io.github.lincolnminto/*`
-  namespace is authorized because the workflow runs in `lincolnminto`'s repo.
-- **Resilience.** The publish is retried a few times to absorb npm propagation
-  lag (the registry validates by fetching the freshly published npm tarball).
+  `package.json`, so the two versions can never diverge.
+- **If it comes back.** Upstream mirrors each release with `mcp-publisher`
+  (`login github-oidc` on the job's `id-token: write`). The registry validates
+  by fetching the version from npm, and npm now holds a fresh version for
+  post-publish processing ("may take a few minutes to become available") — a
+  step that retries for under two minutes fails, as the first release here
+  did. Wait until the version resolves on npm before publishing.
 
 ## Release notes content
 
