@@ -5,6 +5,7 @@ import { release } from 'node:os';
 import open from 'open';
 import { DEFAULT_CALLBACK_PORT, getOAuthUrls } from '../constants';
 import { type Logger, silentLogger } from '../utils/logger';
+import type { OAuthScope } from './oauth-scope';
 
 const AUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -22,13 +23,17 @@ interface BrowserOAuthConfig {
   subdomain: string;
   oauthClientId: string;
   callbackPort?: number | undefined;
+  /** Scope to request on the authorize call; `read write` when omitted. */
+  scope?: OAuthScope | undefined;
 }
 
 interface TokenResult {
   access_token: string;
   refresh_token?: string;
   token_type: string;
-  scope: string;
+  // Space-separated granted scope; optional because nothing guarantees a
+  // refresh response restates it.
+  scope?: string;
   // Present only when the Zendesk OAuth client has token expiration enabled.
   // Seconds until the access/refresh token expires.
   expires_in?: number;
@@ -271,7 +276,7 @@ export const startBrowserAuth = (
         response_type: 'code',
         client_id: oauthClientId,
         redirect_uri: redirectUri,
-        scope: 'read write',
+        scope: config.scope ?? 'read write',
         code_challenge: codeChallenge,
         code_challenge_method: 'S256',
       });

@@ -81,6 +81,34 @@ describe('token-persistence', () => {
     );
   });
 
+  it('keeps a read-only token in its own file, apart from the read-write one', async () => {
+    setPlatform('linux');
+    process.env['XDG_CONFIG_HOME'] = '/home/u/.config';
+    const { resolveTokenPath } = await importFresh();
+    expect(resolveTokenPath('acme', { readOnly: true })).toBe(
+      '/home/u/.config/lincolnminto/zendesk-mcp-server/acme.read.json',
+    );
+    expect(resolveTokenPath('acme', { readOnly: false })).toBe(
+      '/home/u/.config/lincolnminto/zendesk-mcp-server/acme.json',
+    );
+  });
+
+  it('lets ZENDESK_TOKEN_FILE win in read-only mode too', async () => {
+    process.env['ZENDESK_TOKEN_FILE'] = '/custom/token.json';
+    const { resolveTokenPath } = await importFresh();
+    expect(resolveTokenPath('acme', { readOnly: true })).toBe('/custom/token.json');
+  });
+
+  it('round-trips the granted scope with the token record', async () => {
+    setPlatform('linux');
+    const path = '/cfg/acme.read.json';
+    const { saveToken, loadToken } = await importFresh();
+
+    saveToken(path, { accessToken: 'a', scope: 'read' });
+
+    expect(loadToken(path)).toEqual({ accessToken: 'a', scope: 'read' });
+  });
+
   it('sanitizes unsafe characters in the subdomain filename', async () => {
     setPlatform('linux');
     process.env['XDG_CONFIG_HOME'] = '/home/u/.config';

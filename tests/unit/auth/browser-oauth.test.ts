@@ -131,6 +131,25 @@ describe('authenticateViaBrowser', () => {
     expect(openedUrl.searchParams.get('redirect_uri')).toMatch(
       /^http:\/\/localhost:\d+\/callback$/,
     );
+    expect(openedUrl.searchParams.get('scope')).toBe('read write');
+  });
+
+  it('asks Zendesk for the scope it is given, so a read-only server signs in with read only', async () => {
+    mswServer.use(oauthTokenHandler);
+    openMock.mockResolvedValue({});
+
+    const started = await startBrowserAuth({
+      subdomain: SUB,
+      oauthClientId: CLIENT_ID,
+      callbackPort: 0,
+      scope: 'read',
+    });
+
+    expect(new URL(started.authorizeUrl).searchParams.get('scope')).toBe('read');
+    const redirectUri = new URL(started.authorizeUrl).searchParams.get('redirect_uri') ?? '';
+    await fetch(`${redirectUri}?code=the-auth-code`);
+    await started.tokenPromise;
+    await awaitClosed(lastCallbackServer());
   });
 
   it('the success page tells the user the tab will auto-close', async () => {

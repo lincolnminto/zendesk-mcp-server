@@ -13,6 +13,11 @@ export interface PersistedToken {
   accessToken: string;
   refreshToken?: string | undefined;
   expiresAt?: number | undefined;
+  /**
+   * Scope Zendesk granted (`read`, `read write`, ...). Absent on records written
+   * before it was recorded, which a read-only store therefore never trusts.
+   */
+  scope?: string | undefined;
 }
 
 const isWindows = process.platform === 'win32';
@@ -51,13 +56,19 @@ const safeName = (subdomain: string): string => subdomain.replace(/[^a-z0-9-]/gi
  * Path to the token file for a subdomain. Each subdomain gets its **own** file
  * (`<subdomain>.json`, a single record) so concurrent processes for different
  * subdomains never read-modify-write a shared file — no merge, no clobber.
+ * A read-only server keeps its `read`-scoped token in `<subdomain>.read.json`,
+ * so a read-only and a read-write server on the same subdomain never overwrite
+ * each other's token and force a sign-in on every switch.
  * `ZENDESK_TOKEN_FILE` overrides with an explicit path (a single file; use the
- * default layout for multi-subdomain installs).
+ * default layout for multi-subdomain or mixed read-only installs).
  */
-export const resolveTokenPath = (subdomain: string): string => {
+export const resolveTokenPath = (
+  subdomain: string,
+  { readOnly = false }: { readOnly?: boolean } = {},
+): string => {
   const override = process.env['ZENDESK_TOKEN_FILE'];
   if (override) return override;
-  return join(configDir(), `${safeName(subdomain)}.json`);
+  return join(configDir(), `${safeName(subdomain)}${readOnly ? '.read' : ''}.json`);
 };
 
 // Atomic write (tmp + rename) so a crash mid-write can't leave a truncated file,

@@ -21,7 +21,8 @@ Options:
   --mode <mode>           single | namespace (default) | all
   --namespace <ns>        Filter by namespace (repeatable): tickets, help_center, users
   --tool <name>           Filter by tool name (repeatable, forces --mode all)
-  --read-only             Only expose read operations
+  --read-only             Only expose read operations (stdio OAuth: also sign
+                          in with Zendesk's read scope only)
   --no-topology           Disable the Help Center structural context
                           (instructions + zendesk-hc://topology resource)
   --no-promoted-articles  Disable the promoted-article PRE-LISTING (the
@@ -48,6 +49,22 @@ Options:
 ```
 
 `--namespace` and `--read-only` are applied before the proxies are registered, so they narrow the surface in every mode. In the default `namespace` mode, `--namespace help_center` registers a single proxy (`zendesk_help_center`) instead of the full set of namespace proxies.
+
+### Read-only all the way to Zendesk
+
+Over stdio with OAuth, `--read-only` also signs in with Zendesk's `read` scope
+instead of `read write`, so Zendesk itself rejects any write made with the token,
+not just the write tools this server knows about. The read-scoped token lives in
+its own file (`<subdomain>.read.json`, next to the read-write `<subdomain>.json`),
+so a read-only and a read-write server on the same subdomain each keep their own
+sign-in. A read-only server refuses any token it cannot prove is read-scoped,
+such as one persisted by an older version or a read-write file reached through
+[`ZENDESK_TOKEN_FILE`](#zendesk_token_file), and signs in afresh instead.
+
+The scope cannot narrow two credentials the server does not mint: a static API
+token ([`docs/api-token-stdio.md`](api-token-stdio.md)) always carries its
+issuer's full rights, and over HTTP the client brings its own bearer. There,
+`--read-only` narrows the tool surface only.
 
 ### A malformed invocation fails at startup
 
@@ -171,7 +188,9 @@ Local port for the OAuth browser callback (also `--callback-port`). Must match t
 ### `ZENDESK_TOKEN_FILE`
 **Required:** no · **Default:** OS config dir
 
-Path to the persisted OAuth token file (`0600`).
+Path to the persisted OAuth token file (`0600`). One explicit file serves one
+server: with mixed read-only and read-write servers, keep the default layout,
+which gives each its own file (see [Read-only all the way to Zendesk](#read-only-all-the-way-to-zendesk)).
 
 ### `ZENDESK_EMAIL`
 **Required:** only to activate stdio API-token auth (paired with `ZENDESK_API_TOKEN`) · **Default:** none

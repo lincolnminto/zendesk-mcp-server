@@ -27,6 +27,7 @@ const buildOAuthTokenSource = (config: Config, logger: Logger): StdioTokenSource
       subdomain: config.subdomain,
       oauthClientId: config.oauthClientId,
       callbackPort: config.callbackPort,
+      readOnly: config.readOnly,
     },
     logger,
   );
