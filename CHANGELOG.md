@@ -1,3 +1,9 @@
+## [2.26.0](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.25.0...v2.26.0) (2026-11-11)
+
+### Features
+
+* **admin:** export the account configuration to local JSON files ([#7](https://github.com/lincolnminto/zendesk-mcp-server/issues/7)) ([bff6ddb](https://github.com/lincolnminto/zendesk-mcp-server/commit/bff6ddb778693afffff37a6ef5b0443fa51283ae))
+
 ## [2.25.0](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.24.0...v2.25.0) (2026-11-11)
 
 ### Features
