@@ -6,6 +6,18 @@ import { getBaseUrl } from '../constants';
 import type { ToolContext, ToolDefinition } from './definitions';
 
 /**
+ * A list Zendesk serves per item of its parent rather than inline (a schedule's
+ * holidays), fetched for every parent item and attached to it under `attachAs`.
+ */
+interface NestedListSpec {
+  readonly attachAs: string;
+  /** The parent property that identifies it in the nested path (`id`, or `key`). */
+  readonly idField: string;
+  readonly path: (id: string) => string;
+  readonly responseKey: string;
+}
+
+/**
  * Where Zendesk lists one part of the account configuration, and which property
  * of the response carries it. `single` marks an endpoint that answers with one
  * object instead of a list.
@@ -14,6 +26,7 @@ interface ConfigResourceSpec {
   readonly path: string;
   readonly responseKey: string;
   readonly single?: true;
+  readonly nested?: NestedListSpec;
 }
 
 const RESOURCE_KEYS = [
@@ -60,7 +73,16 @@ export const CONFIG_RESOURCES: Readonly<Record<ConfigResourceKey, ConfigResource
   brands: { path: '/brands', responseKey: 'brands' },
   locales: { path: '/locales', responseKey: 'locales' },
   support_addresses: { path: '/recipient_addresses', responseKey: 'recipient_addresses' },
-  schedules: { path: '/business_hours/schedules', responseKey: 'schedules' },
+  schedules: {
+    path: '/business_hours/schedules',
+    responseKey: 'schedules',
+    nested: {
+      attachAs: 'holidays',
+      idField: 'id',
+      path: (id) => `/business_hours/schedules/${id}/holidays`,
+      responseKey: 'holidays',
+    },
+  },
   groups: { path: '/groups', responseKey: 'groups' },
   group_memberships: { path: '/group_memberships', responseKey: 'group_memberships' },
   custom_roles: { path: '/custom_roles', responseKey: 'custom_roles' },
@@ -82,16 +104,38 @@ export const CONFIG_RESOURCES: Readonly<Record<ConfigResourceKey, ConfigResource
   satisfaction_reasons: { path: '/satisfaction_reasons', responseKey: 'reasons' },
   sharing_agreements: { path: '/sharing_agreements', responseKey: 'sharing_agreements' },
   app_installations: { path: '/apps/installations', responseKey: 'installations' },
-  routing_attributes: { path: '/routing/attributes', responseKey: 'attributes' },
-  custom_objects: { path: '/custom_objects', responseKey: 'custom_objects' },
+  routing_attributes: {
+    path: '/routing/attributes',
+    responseKey: 'attributes',
+    nested: {
+      attachAs: 'values',
+      idField: 'id',
+      path: (id) => `/routing/attributes/${id}/values`,
+      responseKey: 'attribute_values',
+    },
+  },
+  custom_objects: {
+    path: '/custom_objects',
+    responseKey: 'custom_objects',
+    nested: {
+      attachAs: 'fields',
+      idField: 'key',
+      path: (key) => `/custom_objects/${key}/fields`,
+      responseKey: 'custom_object_fields',
+    },
+  },
 };
 
 /**
- * Pages read per resource before the export stops and flags it truncated. At
- * Zendesk's 100 items a page that is 20 000 objects, far beyond any account's
- * configuration: this guards against a pagination loop, it is not a real cap.
+ * Pages read per list before the export stops and flags it truncated. At 100
+ * items a page that is 20 000 objects, far beyond any account's configuration:
+ * this guards against a pagination loop, it is not a real cap.
  */
 export const MAX_PAGES = 200;
+
+// Cursor pagination is asked for first: Zendesk's offset pagination refuses
+// anything past 100 pages (10 000 records) with a 400, cursor has no such cap.
+const CURSOR_FIRST_PAGE: Readonly<Record<string, string>> = { 'page[size]': '100' };
 
 interface ApiRequest {
   path: string;
@@ -158,6 +202,77 @@ export const extractItems = (body: Record<string, unknown>, responseKey: string)
 export const snapshotDirName = (subdomain: string, at: Date): string =>
   `${subdomain.replace(/[^a-z0-9-]/gi, '_')}-${at.toISOString().replace(/[:.]/g, '-')}`;
 
+type Body = Record<string, unknown>;
+
+const listOf = (body: Body, responseKey: string): unknown[] => {
+  const items = extractItems(body, responseKey);
+  if (!Array.isArray(items)) {
+    throw new Error(`Unexpected response shape: "${responseKey}" is not a list`);
+  }
+  return items;
+};
+
+// The first page, by cursor when the endpoint supports it. One that does not
+// answers 400 to `page[size]`, and is then read by offset.
+const firstPage = async (subdomain: string, token: string, path: string): Promise<Body> => {
+  try {
+    return await zendeskGet<Body>(subdomain, token, path, { ...CURSOR_FIRST_PAGE });
+  } catch (err) {
+    if (!(err instanceof ZendeskApiError && err.status === 400)) throw err;
+    return zendeskGet<Body>(subdomain, token, path);
+  }
+};
+
+interface FetchedList {
+  items: unknown[];
+  truncated: boolean;
+}
+
+const fetchList = async (
+  subdomain: string,
+  token: string,
+  path: string,
+  responseKey: string,
+): Promise<FetchedList> => {
+  const items: unknown[] = [];
+  let body = await firstPage(subdomain, token, path);
+  for (let pages = 1; ; pages += 1) {
+    items.push(...listOf(body, responseKey));
+    const next = nextRequest(body, subdomain);
+    if (next === undefined) return { items, truncated: false };
+    if (pages >= MAX_PAGES) return { items, truncated: true };
+    body = await zendeskGet<Body>(subdomain, token, next.path, next.params);
+  }
+};
+
+// Attach each parent's nested list, so the export carries it without a second
+// lookup. A parent without the identifying property keeps no nested list.
+const attachNested = async (
+  subdomain: string,
+  token: string,
+  parents: unknown[],
+  nested: NestedListSpec,
+): Promise<{ items: unknown[]; truncated: boolean }> => {
+  let truncated = false;
+  const items: unknown[] = [];
+  for (const parent of parents) {
+    const id = (parent as Body)[nested.idField];
+    if (typeof id !== 'string' && typeof id !== 'number') {
+      items.push(parent);
+      continue;
+    }
+    const child = await fetchList(
+      subdomain,
+      token,
+      nested.path(encodeURIComponent(String(id))),
+      nested.responseKey,
+    );
+    truncated ||= child.truncated;
+    items.push({ ...(parent as Body), [nested.attachAs]: child.items });
+  }
+  return { items, truncated };
+};
+
 interface Fetched {
   data: unknown;
   items: number;
@@ -170,28 +285,18 @@ const fetchResource = async (
   spec: ConfigResourceSpec,
 ): Promise<Fetched> => {
   if (spec.single) {
-    const body = await zendeskGet<Record<string, unknown>>(subdomain, token, spec.path);
+    const body = await zendeskGet<Body>(subdomain, token, spec.path);
     return { data: extractItems(body, spec.responseKey), items: 1, truncated: false };
   }
-  const collected: unknown[] = [];
-  let request: ApiRequest | undefined = { path: spec.path, params: {} };
-  let pages = 0;
-  while (request && pages < MAX_PAGES) {
-    const body: Record<string, unknown> = await zendeskGet<Record<string, unknown>>(
-      subdomain,
-      token,
-      request.path,
-      request.params,
-    );
-    const items = extractItems(body, spec.responseKey);
-    if (!Array.isArray(items)) {
-      throw new Error(`Unexpected response shape: "${spec.responseKey}" is not a list`);
-    }
-    collected.push(...items);
-    pages += 1;
-    request = nextRequest(body, subdomain);
-  }
-  return { data: collected, items: collected.length, truncated: request !== undefined };
+  const list = await fetchList(subdomain, token, spec.path, spec.responseKey);
+  const result = spec.nested
+    ? await attachNested(subdomain, token, list.items, spec.nested)
+    : { items: list.items, truncated: false };
+  return {
+    data: result.items,
+    items: result.items.length,
+    truncated: list.truncated || result.truncated,
+  };
 };
 
 type ManifestEntry = { resource: ConfigResourceKey; endpoint: string } & (
@@ -199,11 +304,42 @@ type ManifestEntry = { resource: ConfigResourceKey; endpoint: string } & (
   | { status: 'skipped' | 'failed'; reason: string }
 );
 
+// The `error` code Zendesk puts in a JSON error body (`InvalidEndpoint`,
+// `Forbidden`...), which tells a missing feature from a wrong path.
+const zendeskErrorCode = (body: string): string | undefined => {
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    return typeof parsed.error === 'string' ? parsed.error : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const skipReason = (err: ZendeskApiError): string => {
+  const code = zendeskErrorCode(err.body);
+  const status = `${err.status}${code ? ` ${code}` : ''}`;
+  return err.status === 403
+    ? `No access (${status}): the signed-in account cannot read it, or the plan lacks it.`
+    : `Not available on this account (${status}): the feature is off or not on this plan, or the endpoint does not exist.`;
+};
+
+// A 401 on one endpoint means either the token or that endpoint; /users/me
+// settles which. Only a token Zendesk rejects outright is worth the server's
+// 401 backstop (which drops it): one odd endpoint must not cost the sign-in.
+const tokenStillWorks = async (subdomain: string, token: string): Promise<boolean> => {
+  try {
+    await zendeskGet(subdomain, token, '/users/me');
+    return true;
+  } catch (err) {
+    return !(err instanceof ZendeskApiError && err.status === 401);
+  }
+};
+
 /**
- * Export one resource. A resource the account cannot read (403) or whose feature
- * is off (404) is skipped, and any other failure recorded, so one gap never costs
- * the rest of the export. A 401 is rethrown: it means the token, not the
- * resource, and the server's backstop must see it to recover the token.
+ * Export one resource. A resource the account cannot read (403) or that is not
+ * available on it (404) is skipped, and any other failure recorded, so one gap
+ * never costs the rest of the export. A 401 is rethrown only when the token
+ * itself is rejected, so the server's backstop can recover it.
  */
 const exportResource = async (
   ctx: ToolContext,
@@ -226,17 +362,39 @@ const exportResource = async (
       truncated: fetched.truncated,
     };
   } catch (err) {
-    if (!(err instanceof Error) || (err instanceof ZendeskApiError && err.status === 401)) {
-      throw err;
+    if (!(err instanceof Error)) throw err;
+    if (err instanceof ZendeskApiError && err.status === 401) {
+      if (!(await tokenStillWorks(ctx.subdomain, token))) throw err;
+      return {
+        resource,
+        endpoint,
+        status: 'failed',
+        reason:
+          'Unauthorized (401) on this endpoint, although the token still works for /users/me.',
+      };
     }
-    const skipped = err instanceof ZendeskApiError && (err.status === 403 || err.status === 404);
-    return { resource, endpoint, status: skipped ? 'skipped' : 'failed', reason: err.message };
+    if (err instanceof ZendeskApiError && (err.status === 403 || err.status === 404)) {
+      return { resource, endpoint, status: 'skipped', reason: skipReason(err) };
+    }
+    return { resource, endpoint, status: 'failed', reason: err.message };
   }
+};
+
+// The summary is a Markdown table: a raw error body (an HTML page, a message
+// with `|` or newlines) would break it, so the cell gets one short line. The
+// manifest keeps the full reason.
+const REASON_CELL_MAX = 160;
+const WHITESPACE_RUN = /\s+/g;
+const PIPE = /\|/g;
+
+const reasonCell = (reason: string): string => {
+  const line = reason.replace(WHITESPACE_RUN, ' ').replace(PIPE, '/').trim();
+  return line.length > REASON_CELL_MAX ? `${line.slice(0, REASON_CELL_MAX - 1)}…` : line;
 };
 
 const statusCell = (entry: ManifestEntry): string => {
   if (entry.status === 'exported') return entry.truncated ? 'exported (truncated)' : 'exported';
-  return `${entry.status}: ${entry.reason}`;
+  return `${entry.status}: ${reasonCell(entry.reason)}`;
 };
 
 const formatSummary = (subdomain: string, snapshot: string, entries: ManifestEntry[]): string => {
@@ -255,81 +413,95 @@ const formatSummary = (subdomain: string, snapshot: string, entries: ManifestEnt
   ].join('\n');
 };
 
-export const createAdminTools = (ctx: ToolContext): ToolDefinition[] => [
-  {
-    name: 'export_account_config',
-    namespace: 'admin',
-    readOnly: true,
-    title: 'Export Zendesk Account Configuration',
-    description:
-      "Export the Zendesk account's admin configuration to local JSON files, one per resource: business rules (triggers, automations, macros, views), ticket forms, fields and statuses, SLA policies, schedules, groups, roles, brands, webhooks, account settings and more. " +
-      'Use it to audit, document, diff or migrate a Zendesk setup, then read the files for the details instead of pulling them through the conversation. ' +
-      'It only reads from Zendesk; on the machine running the server it creates a new timestamped folder under `directory` and never overwrites an earlier export. ' +
-      'Returns the folder path and a per-resource summary: items exported, or why a resource was skipped (403: the account cannot read it; 404: the feature is off) or failed. ' +
-      'Needs an admin sign-in and the stdio transport.',
-    inputSchema: z.object({
-      directory: z
-        .string()
-        .min(1)
-        .describe(
-          'Absolute path of a local directory on the machine running the server, created if missing. Each export goes into a new `<subdomain>-<timestamp>` folder inside it, so earlier exports stay untouched.',
-        ),
-      resources: z
-        .array(z.enum(RESOURCE_KEYS))
-        .min(1)
-        .optional()
-        .describe(
-          'Which parts of the configuration to export, by catalog name (e.g. ["triggers", "automations", "ticket_forms"]). Omit to export the whole catalog, which is what an audit or a migration needs.',
-        ),
-    }),
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: true,
-    },
-    handler: async (params) => {
-      const { directory, resources } = params as {
-        directory: string;
-        resources?: ConfigResourceKey[];
-      };
-      if (!ctx.localFileAccess) {
-        throw new Error(
-          'export_account_config is not available over the HTTP transport: the files would be written on the server host, not on your machine. Run the server over stdio to export.',
-        );
-      }
-      if (!isAbsolute(directory)) {
-        throw new Error('directory must be an absolute path on the machine running the server.');
-      }
-      const selected = RESOURCE_KEYS.filter((key) => resources?.includes(key) ?? true);
-      // Sign-in first: a call that still needs one must leave no empty folder behind.
-      await ctx.getToken();
-      const exportedAt = new Date();
-      await mkdir(directory, { recursive: true });
-      // Not recursive: the snapshot folder must be new, so a second export can
-      // never write into (and overwrite) an earlier one.
-      const snapshot = join(directory, snapshotDirName(ctx.subdomain, exportedAt));
-      await mkdir(snapshot);
+const writeManifest = (snapshot: string, manifest: object): Promise<void> =>
+  writeFile(join(snapshot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
-      const entries: ManifestEntry[] = [];
+// A UNC path (\\host\share, or //host/share) counts as absolute on Windows, and
+// would make the server open an SMB connection to whatever host the caller names.
+const isNetworkPath = (path: string): boolean => path.startsWith('\\\\') || path.startsWith('//');
+
+/**
+ * stdio only: over HTTP the files would land on the server host, not on the
+ * caller's machine, and listing a tool that can never run there would only waste
+ * an agent's call. So the namespace is simply absent without local file access.
+ */
+export const createAdminTools = (ctx: ToolContext): ToolDefinition[] =>
+  ctx.localFileAccess ? [exportAccountConfig(ctx)] : [];
+
+const exportAccountConfig = (ctx: ToolContext): ToolDefinition => ({
+  name: 'export_account_config',
+  namespace: 'admin',
+  // `readOnly` is about Zendesk (it keeps the tool on a --read-only server,
+  // where snapshotting production is the point); `readOnlyHint` is about the
+  // client's environment, which the export does change by writing files, so it
+  // is honestly false. Never destructive: the snapshot folder is always new.
+  readOnly: true,
+  title: 'Export Zendesk Account Configuration',
+  description:
+    "Export the Zendesk account's admin configuration to local JSON files, one per resource: business rules (triggers, automations, macros, views), ticket forms, fields and statuses, SLA policies, schedules with their holidays, groups, roles, brands, webhooks, account settings and more. " +
+    'Use it to audit, document, diff or migrate a Zendesk setup, then read the files for the details instead of pulling them through the conversation; to look up one field id, macro, view or SLA policy during ticket work, use list_ticket_fields, list_macros, list_views or list_sla_policies instead. ' +
+    'It only reads from Zendesk; on the machine running the server it creates a new timestamped folder under `directory` and never overwrites an earlier export. ' +
+    'Returns the folder path and a per-resource summary: items exported, or why a resource was skipped (403: no access; 404: not available on this account) or failed. ' +
+    'Needs an admin sign-in; available over stdio only.',
+  inputSchema: z.object({
+    directory: z
+      .string()
+      .min(1)
+      .describe(
+        'Absolute local path of a directory on the machine running the server (not a network share), created if missing. Each export goes into a new `<subdomain>-<timestamp>` folder inside it, so earlier exports stay untouched.',
+      ),
+    resources: z
+      .array(z.enum(RESOURCE_KEYS))
+      .min(1)
+      .optional()
+      .describe(
+        'Which parts of the configuration to export, by catalog name (e.g. ["triggers", "automations", "ticket_forms"]). Omit to export the whole catalog, which is what an audit or a migration needs.',
+      ),
+  }),
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  },
+  handler: async (params) => {
+    const { directory, resources } = params as {
+      directory: string;
+      resources?: ConfigResourceKey[];
+    };
+    if (!isAbsolute(directory) || isNetworkPath(directory)) {
+      throw new Error(
+        'directory must be an absolute local path on the machine running the server, not a relative path or a network share.',
+      );
+    }
+    const selected = RESOURCE_KEYS.filter((key) => resources?.includes(key) ?? true);
+    // Sign-in first: a call that still needs one must leave no empty folder behind.
+    await ctx.getToken();
+    const exportedAt = new Date();
+    await mkdir(directory, { recursive: true });
+    // Not recursive: the snapshot folder must be new, so a second export can
+    // never write into (and overwrite) an earlier one.
+    const snapshot = join(directory, snapshotDirName(ctx.subdomain, exportedAt));
+    await mkdir(snapshot);
+
+    const manifest = { subdomain: ctx.subdomain, exported_at: exportedAt.toISOString() };
+    const entries: ManifestEntry[] = [];
+    try {
       for (const resource of selected) {
         // Sequential on purpose: the export is a one-off, and a burst of parallel
         // reads would only trade wall time for the account's rate limit.
         entries.push(await exportResource(ctx, snapshot, resource));
       }
-      const manifest = {
-        subdomain: ctx.subdomain,
-        exported_at: exportedAt.toISOString(),
-        resources: entries,
-      };
-      await writeFile(
-        join(snapshot, 'manifest.json'),
-        `${JSON.stringify(manifest, null, 2)}\n`,
-        'utf8',
-      );
-      return {
-        content: [{ type: 'text', text: formatSummary(ctx.subdomain, snapshot, entries) }],
-      };
-    },
+    } catch (err) {
+      // Whatever stops the run (a rejected token), the folder still says what
+      // was exported before it and why it stopped.
+      const aborted = err instanceof Error ? err.message : String(err);
+      await writeManifest(snapshot, { ...manifest, aborted, resources: entries });
+      throw err;
+    }
+    await writeManifest(snapshot, { ...manifest, resources: entries });
+    return {
+      content: [{ type: 'text', text: formatSummary(ctx.subdomain, snapshot, entries) }],
+    };
   },
-];
+});

@@ -3,7 +3,11 @@ import { filterTools, groupByNamespace } from '../../../src/routing/registry';
 import type { ToolContext } from '../../../src/tools/definitions';
 import { createAllTools } from '../../../src/tools/index';
 
-const ctx: ToolContext = { subdomain: 'testsubdomain', getToken: () => 'token' };
+const ctx: ToolContext = {
+  subdomain: 'testsubdomain',
+  getToken: () => 'token',
+  localFileAccess: true,
+};
 const allTools = createAllTools(ctx);
 
 describe('filterTools', () => {
