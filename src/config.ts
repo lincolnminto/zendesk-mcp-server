@@ -378,13 +378,15 @@ const exportAskedFor = (cli: CliResult): string | undefined => {
 // would silently come up empty, and so would a server filtered down to it.
 const resolveExportDir = (cli: CliResult, transport: string): string | undefined => {
   const exportDir = cli.exportDir ?? requireNonEmptyEnv('ZENDESK_EXPORT_DIR');
-  if (transport === 'http' && exportDir !== undefined) {
+  const asked = exportAskedFor(cli);
+  // Checked first, so an HTTP operator is never told to set the very directory
+  // HTTP refuses next.
+  if (transport === 'http' && (exportDir !== undefined || asked)) {
     throw new Error(
-      'The account export (--export-dir / ZENDESK_EXPORT_DIR) is stdio only: over HTTP the files would be written on the server host. Unset it for HTTP mode.',
+      'The account export (--export-dir / ZENDESK_EXPORT_DIR, the admin namespace) is stdio only: over HTTP the files would be written on the server host. Leave it out in HTTP mode.',
     );
   }
-  const asked = exportDir === undefined ? exportAskedFor(cli) : undefined;
-  if (asked) {
+  if (asked && exportDir === undefined) {
     throw new Error(
       `${asked} needs an export directory: set --export-dir (or ZENDESK_EXPORT_DIR) to an absolute local path.`,
     );

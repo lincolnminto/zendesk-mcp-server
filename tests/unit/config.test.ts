@@ -154,6 +154,15 @@ describe('loadConfig', () => {
       );
     });
 
+    it('over HTTP, refuses asking for it by name as stdio only, not as a missing directory', () => {
+      expect(() =>
+        loadConfig(['mycompany', '--transport', 'http', '--namespace', 'admin']),
+      ).toThrow(/account export.*stdio only/);
+      expect(() =>
+        loadConfig(['mycompany', '--transport', 'http', '--tool', 'export_account_config']),
+      ).toThrow(/account export.*stdio only/);
+    });
+
     it('is refused over HTTP, where the files would land on the server host', () => {
       expect(() =>
         loadConfig(['mycompany', '--transport', 'http', '--export-dir', '/srv/exports']),
