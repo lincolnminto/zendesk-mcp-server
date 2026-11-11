@@ -516,7 +516,100 @@ describe('createTokenStore', () => {
       startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
       await expect(store.getToken()).rejects.toThrow('authentication required');
       expect(saveTokenMock).not.toHaveBeenCalled();
-      expect(logger.error).toHaveBeenCalledWith('oauth_scope_too_broad');
+      expect(logger.error).toHaveBeenCalledWith('oauth_scope_too_broad', { scope: 'read write' });
+    });
+
+    it('takes a code exchange that omits scope as granting the requested one (RFC 6749 s5.1)', async () => {
+      const { started, resolveToken } = deferredStarted();
+      startBrowserAuthMock.mockResolvedValue(started);
+      const store = createTokenStore(READ_ONLY);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+      resolveToken({ access_token: 'ro-token', refresh_token: 'r1' });
+      await flush();
+
+      await expect(store.getToken()).resolves.toBe('ro-token');
+      expect(saveTokenMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ accessToken: 'ro-token', scope: 'read' }),
+        expect.anything(),
+      );
+    });
+
+    it('records the requested read write scope when a default sign-in omits it', async () => {
+      const { started, resolveToken } = deferredStarted();
+      startBrowserAuthMock.mockResolvedValue(started);
+      const store = createTokenStore(CONFIG);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+      resolveToken({ access_token: 'rw-token' });
+      await flush();
+
+      expect(saveTokenMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ accessToken: 'rw-token', scope: 'read write' }),
+        expect.anything(),
+      );
+    });
+
+    it('drops a refresh that comes back broader than read and signs in afresh', async () => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'old',
+        refreshToken: 'r1',
+        expiresAt: Date.now() - 1000,
+        scope: 'read',
+      });
+      refreshAccessTokenMock.mockResolvedValue({
+        access_token: 'rw',
+        refresh_token: 'r2',
+        expires_in: 3600,
+        scope: 'read write',
+      });
+      startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const store = createTokenStore(READ_ONLY, logger as never);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+      expect(logger.warn).toHaveBeenCalledWith('oauth_token_refresh_failed', {
+        error: 'Refreshed token scope is broader than read: read write',
+      });
+      expect(saveTokenMock).not.toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ accessToken: 'rw' }),
+        expect.anything(),
+      );
+      expect(clearTokenMock).toHaveBeenCalled();
+    });
+
+    it('invalidate keeps the recorded scope, so the record still backs a read-only server', async () => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'ro',
+        refreshToken: 'r1',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        scope: 'read',
+      });
+      const store = createTokenStore(READ_ONLY);
+
+      store.invalidate();
+
+      expect(saveTokenMock).toHaveBeenCalledWith(
+        expect.any(String),
+        { accessToken: 'ro', refreshToken: 'r1', expiresAt: 0, scope: 'read' },
+        expect.anything(),
+      );
+    });
+
+    it('treats a malformed scope on disk as not read-only instead of crashing', async () => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'odd',
+        scope: ['read'],
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+
+      const store = createTokenStore(READ_ONLY);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
     });
 
     it('keeps the recorded scope across a refresh that does not restate it', async () => {

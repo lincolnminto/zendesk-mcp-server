@@ -39,4 +39,11 @@ describe('isReadOnlyScope', () => {
   it('rejects an unknown scope (a token persisted before scopes were recorded)', () => {
     expect(isReadOnlyScope(undefined)).toBe(false);
   });
+
+  it.each([[42], [['read']], [{ read: true }], [null]])(
+    'rejects a malformed scope from disk (%j) without throwing',
+    (scope) => {
+      expect(isReadOnlyScope(scope)).toBe(false);
+    },
+  );
 });

@@ -14,9 +14,11 @@ export const requestedScope = (readOnly: boolean): OAuthScope => (readOnly ? 're
 const READ_ENTRY = /^(?:read|[a-z_]+:read)$/;
 const WHITESPACE = /\s+/;
 
-// `=== true` folds the `undefined` of a missing scope into `false`.
-export const isReadOnlyScope = (scope: string | undefined): boolean =>
+// `unknown`, not `string | undefined`: the scope comes back from a token file,
+// where garbage must read as "not read-only" rather than crash the boot.
+export const isReadOnlyScope = (scope: unknown): boolean =>
+  typeof scope === 'string' &&
   scope
-    ?.trim()
+    .trim()
     .split(WHITESPACE)
-    .every((entry) => READ_ENTRY.test(entry)) === true;
+    .every((entry) => READ_ENTRY.test(entry));
