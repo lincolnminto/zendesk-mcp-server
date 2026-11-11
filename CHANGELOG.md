@@ -1,3 +1,17 @@
+## [2.25.0](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.24.0...v2.25.0) (2026-11-11)
+
+### Features
+
+* **auth:** sign in with the read scope when --read-only ([#6](https://github.com/lincolnminto/zendesk-mcp-server/issues/6)) ([af5901c](https://github.com/lincolnminto/zendesk-mcp-server/commit/af5901c6c091fcdf48ad34f621c240deabcc4bb6))
+
+<details>
+<summary>🔧 Internal changes (chore, ci, build, refactor, tests, docs…)</summary>
+
+### Continuous Integration
+
+* **release:** stop mirroring releases into the MCP registry ([#5](https://github.com/lincolnminto/zendesk-mcp-server/issues/5)) ([6d4fecb](https://github.com/lincolnminto/zendesk-mcp-server/commit/6d4fecba3ee9ce1f665b8597f97487dbab66f558))
+</details>
+
 ## [2.24.0](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.23.0...v2.24.0) (2026-11-05)
 
 ### Features
