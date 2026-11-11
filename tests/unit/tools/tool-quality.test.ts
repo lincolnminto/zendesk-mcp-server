@@ -13,7 +13,11 @@ import { createAllTools, type ToolContext } from '../../../src/tools';
 // and an exemplar tool to imitate — deliberately WITHOUT naming the mechanical
 // pass condition, so the fix is a real improvement rather than gaming the check.
 
-const ctx: ToolContext = { subdomain: 'testsubdomain', getToken: () => 'test-token' };
+const ctx: ToolContext = {
+  subdomain: 'testsubdomain',
+  getToken: () => 'test-token',
+  exportDir: '/exports',
+};
 const tools = createAllTools(ctx);
 
 // Exemplars already in the tree that clear the bar — point fixers at these.

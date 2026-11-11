@@ -3,7 +3,11 @@ import { filterTools, groupByNamespace } from '../../../src/routing/registry';
 import type { ToolContext } from '../../../src/tools/definitions';
 import { createAllTools } from '../../../src/tools/index';
 
-const ctx: ToolContext = { subdomain: 'testsubdomain', getToken: () => 'token' };
+const ctx: ToolContext = {
+  subdomain: 'testsubdomain',
+  getToken: () => 'token',
+  exportDir: '/exports',
+};
 const allTools = createAllTools(ctx);
 
 describe('filterTools', () => {
@@ -57,6 +61,7 @@ describe('groupByNamespace', () => {
     expect(grouped.has('tickets')).toBe(true);
     expect(grouped.has('help_center')).toBe(true);
     expect(grouped.has('users')).toBe(true);
+    expect(grouped.has('admin')).toBe(true);
   });
 
   it('has correct tool counts per namespace', () => {
@@ -64,8 +69,10 @@ describe('groupByNamespace', () => {
     const ticketCount = grouped.get('tickets')?.length ?? 0;
     const hcCount = grouped.get('help_center')?.length ?? 0;
     const userCount = grouped.get('users')?.length ?? 0;
+    const adminCount = grouped.get('admin')?.length ?? 0;
     expect(ticketCount).toBe(20); // 18 ticket tools + 1 search + 1 ticket relations
     expect(hcCount).toBe(29);
     expect(userCount).toBe(5);
+    expect(adminCount).toBe(1);
   });
 });

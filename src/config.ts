@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import { type ParseArgsConfig, parseArgs } from 'node:util';
 import * as z from 'zod/v4';
 
@@ -7,11 +8,16 @@ export type ToolMode = z.infer<typeof ToolMode>;
 export const LogLevel = z.enum(['debug', 'info', 'warn', 'error']);
 export type LogLevel = z.infer<typeof LogLevel>;
 
-export const Namespace = z.enum(['tickets', 'help_center', 'users']);
+export const Namespace = z.enum(['tickets', 'help_center', 'users', 'admin']);
 export type Namespace = z.infer<typeof Namespace>;
 
 export const Transport = z.enum(['stdio', 'http']);
 export type Transport = z.infer<typeof Transport>;
+
+// Any two leading separators, in either direction: Windows reads `\\host`,
+// `//host`, `\/host` and `/\host` alike as a UNC share, and writing there would
+// open an SMB connection to that host.
+const NETWORK_PATH = /^[\\/]{2}/;
 
 export const ConfigSchema = z.object({
   subdomain: z.string().min(1, 'ZENDESK_SUBDOMAIN is required'),
@@ -124,6 +130,19 @@ export const ConfigSchema = z.object({
     )
     .default([]),
   callbackPort: z.number().int().min(1).max(65535).optional(),
+  /**
+   * Where `export_account_config` writes its snapshots; the admin namespace
+   * exists only when this is set. It is the operator's choice, never the
+   * model's: the tool takes no path, so a prompt cannot steer where files land.
+   * stdio only (refused at boot over HTTP, see loadConfig).
+   */
+  exportDir: z
+    .string()
+    .refine((dir) => isAbsolute(dir) && !NETWORK_PATH.test(dir), {
+      message:
+        'The export directory must be an absolute local path (--export-dir / ZENDESK_EXPORT_DIR), not a relative path or a network share.',
+    })
+    .optional(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -148,6 +167,7 @@ interface CliResult {
   publicUrl?: string;
   corsOrigins?: string[];
   callbackPort?: number;
+  exportDir?: string;
 }
 
 // Number.parseInt('8080abc', 10) === 8080 — silently accepts a numeric
@@ -213,6 +233,7 @@ const CLI_OPTIONS = {
   'public-url': { type: 'string' },
   'cors-origin': { type: 'string', multiple: true },
   'callback-port': { type: 'string' },
+  'export-dir': { type: 'string' },
   'read-only': { type: 'boolean' },
   'no-topology': { type: 'boolean' },
   'no-promoted-articles': { type: 'boolean' },
@@ -241,6 +262,7 @@ const FIELD_BY_FLAG = new Map<string, keyof CliResult>([
   ['host', 'host'],
   ['public-url', 'publicUrl'],
   ['cors-origin', 'corsOrigins'],
+  ['export-dir', 'exportDir'],
 ]);
 
 // Standalone flags set a fixed value, which is why they cannot go through
@@ -343,6 +365,35 @@ const resolveTransportSettings = (cli: CliResult): TransportSettings => {
   };
 };
 
+// What, if anything, in the invocation asks for the account export by name.
+const exportAskedFor = (cli: CliResult): string | undefined => {
+  if (cli.namespaces?.includes('admin')) return 'The admin namespace';
+  if (cli.tools?.includes('export_account_config')) return 'export_account_config';
+  return undefined;
+};
+
+// The export writes files where the server runs: over HTTP that is the server
+// host, not the caller's machine, and every remote caller would write there.
+// Asking for the export without a directory is refused too: the admin namespace
+// would silently come up empty, and so would a server filtered down to it.
+const resolveExportDir = (cli: CliResult, transport: string): string | undefined => {
+  const exportDir = cli.exportDir ?? requireNonEmptyEnv('ZENDESK_EXPORT_DIR');
+  const asked = exportAskedFor(cli);
+  // Checked first, so an HTTP operator is never told to set the very directory
+  // HTTP refuses next.
+  if (transport === 'http' && (exportDir !== undefined || asked)) {
+    throw new Error(
+      'The account export (--export-dir / ZENDESK_EXPORT_DIR, the admin namespace) is stdio only: over HTTP the files would be written on the server host. Leave it out in HTTP mode.',
+    );
+  }
+  if (asked && exportDir === undefined) {
+    throw new Error(
+      `${asked} needs an export directory: set --export-dir (or ZENDESK_EXPORT_DIR) to an absolute local path.`,
+    );
+  }
+  return exportDir;
+};
+
 export const loadConfig = (argv: string[] = process.argv.slice(2)): Config => {
   const cli = parseCliArgs(argv);
 
@@ -381,6 +432,8 @@ export const loadConfig = (argv: string[] = process.argv.slice(2)): Config => {
     );
   }
 
+  const exportDir = resolveExportDir(cli, transportSettings.transport);
+
   return ConfigSchema.parse({
     subdomain,
     oauthClientId,
@@ -396,6 +449,7 @@ export const loadConfig = (argv: string[] = process.argv.slice(2)): Config => {
     hcResourceScheme,
     dev: cli.dev ?? false,
     callbackPort,
+    exportDir,
     ...transportSettings,
   });
 };

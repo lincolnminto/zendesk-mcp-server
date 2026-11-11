@@ -59,6 +59,7 @@ const NAMESPACE_LABELS: Record<string, { toolName: string; title: string }> = {
   tickets: { toolName: 'zendesk_tickets', title: 'Zendesk Tickets' },
   help_center: { toolName: 'zendesk_help_center', title: 'Zendesk Help Center' },
   users: { toolName: 'zendesk_users', title: 'Zendesk Users' },
+  admin: { toolName: 'zendesk_admin', title: 'Zendesk Admin' },
 };
 
 // Keep proxy descriptions compact: a proxy tool concatenates one line per
@@ -440,6 +441,7 @@ export const createMcpServer = (
     subdomain: config.subdomain,
     getToken,
     localFileAccess: config.transport === 'stdio',
+    exportDir: config.exportDir,
   });
   registerToolset(server, { config, getToken, onUnauthorized, logger }, tools);
   return server;

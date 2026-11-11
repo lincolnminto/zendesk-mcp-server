@@ -26,6 +26,7 @@ const TOOL_MODULES = [
   { file: 'search.ts', factory: 'createSearchTools' },
   { file: 'help-center.ts', factory: 'createHelpCenterTools' },
   { file: 'users.ts', factory: 'createUserTools' },
+  { file: 'admin.ts', factory: 'createAdminTools' },
 ] as const;
 
 type ToolFactory = (ctx: ToolContext) => ToolDefinition[];
@@ -75,6 +76,7 @@ export const createReloadableServer = (
     subdomain: config.subdomain,
     getToken,
     localFileAccess: config.transport === 'stdio',
+    exportDir: config.exportDir,
   };
   const params = { config, getToken, onUnauthorized, logger };
 
@@ -137,7 +139,7 @@ export const registerReloadTool = (
     {
       title: 'Reload tools from source (dev)',
       description:
-        'Dev only. Re-imports the Zendesk tool modules from source and re-registers them on this live session, so tool code you just edited takes effect without restarting the server or reconnecting the client. Call it once at the end of an edit cycle, before testing your changes; the refreshed tool list is announced via tools/list_changed. Only the tool modules (tickets, search, help_center, users) are reloaded — edits to shared infrastructure (HTTP client, shared definitions, server wiring) still require a full restart. Takes no arguments and makes no Zendesk API calls.',
+        'Dev only. Re-imports the Zendesk tool modules from source and re-registers them on this live session, so tool code you just edited takes effect without restarting the server or reconnecting the client. Call it once at the end of an edit cycle, before testing your changes; the refreshed tool list is announced via tools/list_changed. Only the tool modules (tickets, search, help_center, users, admin) are reloaded — edits to shared infrastructure (HTTP client, shared definitions, server wiring) still require a full restart. Takes no arguments and makes no Zendesk API calls.',
       inputSchema: z.object({}).strict(),
       annotations: {
         readOnlyHint: false,

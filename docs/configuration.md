@@ -19,7 +19,8 @@ zendesk-mcp-server <subdomain> [options]
 
 Options:
   --mode <mode>           single | namespace (default) | all
-  --namespace <ns>        Filter by namespace (repeatable): tickets, help_center, users
+  --namespace <ns>        Filter by namespace (repeatable): tickets, help_center,
+                          users, admin (admin exists only with --export-dir)
   --tool <name>           Filter by tool name (repeatable, forces --mode all)
   --read-only             Only expose read operations (stdio OAuth: also sign
                           in with Zendesk's read scope only)
@@ -43,6 +44,8 @@ Options:
                           adds to the default allowlist of major web MCP
                           clients + localhost-any-port)
   --callback-port <port>  Local OAuth callback port for stdio (default 27439)
+  --export-dir <path>     Absolute local directory for export_account_config
+                          snapshots; enables the admin namespace (stdio only)
   --dev                   Dev-only: expose a reload_tools tool that hot-reloads
                           edited tool code on demand (stdio only; see "Dev mode"
                           below)
@@ -191,6 +194,22 @@ Local port for the OAuth browser callback (also `--callback-port`). Must match t
 Path to the persisted OAuth token file (`0600`). One explicit file serves one
 server: with mixed read-only and read-write servers, keep the default layout,
 which gives each its own file (see [Read-only all the way to Zendesk](#read-only-all-the-way-to-zendesk)).
+
+### `ZENDESK_EXPORT_DIR`
+**Required:** no · **Default:** none (the account export is off)
+
+Absolute local directory where `export_account_config` writes its snapshots,
+one new `<subdomain>-<timestamp>` folder per export; the same as
+`--export-dir`, which wins over it. Setting it is what registers the `admin`
+namespace: the directory is the operator's choice, never the model's, so a
+prompt cannot steer where files land. stdio only (refused at boot over HTTP,
+where the files would land on the server host); a relative path or a network
+share (`\\host\share`, `//host/share`) is refused at boot too.
+
+The export writes local files, so its `readOnlyHint` is `false` while it stays
+available with `--read-only` (it only reads from Zendesk). In `single` mode,
+enabling it therefore makes the one `zendesk` proxy report `readOnlyHint: false`
+as well; prefer the default `namespace` mode, where only `zendesk_admin` does.
 
 ### `ZENDESK_EMAIL`
 **Required:** only to activate stdio API-token auth (paired with `ZENDESK_API_TOKEN`) · **Default:** none

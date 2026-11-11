@@ -13,6 +13,7 @@ describe('loadConfig', () => {
     delete process.env['PORT'];
     delete process.env['ZENDESK_OAUTH_CALLBACK_PORT'];
     delete process.env['HC_RESOURCE_SCHEME'];
+    delete process.env['ZENDESK_EXPORT_DIR'];
   });
 
   it('parses subdomain from CLI positional arg', () => {
@@ -91,6 +92,87 @@ describe('loadConfig', () => {
   it('parses --dev flag', () => {
     const config = loadConfig(['mycompany', '--dev']);
     expect(config.dev).toBe(true);
+  });
+
+  describe('export directory', () => {
+    it('is unset by default, which keeps the account export off', () => {
+      expect(loadConfig(['mycompany']).exportDir).toBeUndefined();
+    });
+
+    it('reads --export-dir', () => {
+      expect(loadConfig(['mycompany', '--export-dir', '/srv/exports']).exportDir).toBe(
+        '/srv/exports',
+      );
+    });
+
+    it('reads ZENDESK_EXPORT_DIR, with the flag winning', () => {
+      process.env['ZENDESK_EXPORT_DIR'] = '/env/exports';
+      expect(loadConfig(['mycompany']).exportDir).toBe('/env/exports');
+      expect(loadConfig(['mycompany', '--export-dir', '/cli/exports']).exportDir).toBe(
+        '/cli/exports',
+      );
+    });
+
+    it('refuses an empty ZENDESK_EXPORT_DIR', () => {
+      process.env['ZENDESK_EXPORT_DIR'] = '';
+      expect(() => loadConfig(['mycompany'])).toThrow('Empty ZENDESK_EXPORT_DIR');
+    });
+
+    it.each([['exports'], ['./exports']])('refuses a relative path (%s)', (dir) => {
+      expect(() => loadConfig(['mycompany', '--export-dir', dir])).toThrow(
+        /export directory must be an absolute local path/,
+      );
+    });
+
+    it.each([['\\\\host\\share'], ['//host/share'], ['\\/host/share'], ['/\\host\\share']])(
+      'refuses a network share (%s)',
+      (dir) => {
+        expect(() => loadConfig(['mycompany', '--export-dir', dir])).toThrow(
+          /export directory must be an absolute local path/,
+        );
+      },
+    );
+
+    it('refuses --namespace admin without one, instead of booting with no tools', () => {
+      expect(() => loadConfig(['mycompany', '--namespace', 'admin'])).toThrow(
+        /admin namespace.*needs an export directory/,
+      );
+      expect(
+        loadConfig(['mycompany', '--namespace', 'admin', '--export-dir', '/x']).namespaces,
+      ).toEqual(['admin']);
+    });
+
+    it('refuses --tool export_account_config without one', () => {
+      expect(() => loadConfig(['mycompany', '--tool', 'export_account_config'])).toThrow(
+        /export_account_config.*needs an export directory/,
+      );
+    });
+
+    it('accepts a local path with a doubled separator past its start', () => {
+      expect(loadConfig(['mycompany', '--export-dir', '/srv//exports']).exportDir).toBe(
+        '/srv//exports',
+      );
+    });
+
+    it('over HTTP, refuses asking for it by name as stdio only, not as a missing directory', () => {
+      expect(() =>
+        loadConfig(['mycompany', '--transport', 'http', '--namespace', 'admin']),
+      ).toThrow(/account export.*stdio only/);
+      expect(() =>
+        loadConfig(['mycompany', '--transport', 'http', '--tool', 'export_account_config']),
+      ).toThrow(/account export.*stdio only/);
+    });
+
+    it('is refused over HTTP, where the files would land on the server host', () => {
+      expect(() =>
+        loadConfig(['mycompany', '--transport', 'http', '--export-dir', '/srv/exports']),
+      ).toThrow(/account export.*stdio only/);
+    });
+  });
+
+  it('accepts the admin namespace', () => {
+    const config = loadConfig(['mycompany', '--namespace', 'admin', '--export-dir', '/exports']);
+    expect(config.namespaces).toEqual(['admin']);
   });
 
   it('parses multiple --namespace flags', () => {
@@ -397,7 +479,7 @@ describe('loadConfig', () => {
 
     it('covers every value-taking flag declared in CLI_OPTIONS', () => {
       // Guards the parametrised cases below against silently shrinking to zero.
-      expect(valueFlags).toHaveLength(11);
+      expect(valueFlags).toHaveLength(12);
     });
 
     it.each(valueFlags)('rejects %s as the last argument (value forgotten)', (flag) => {

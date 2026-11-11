@@ -1,3 +1,4 @@
+import { createAdminTools } from './admin';
 import type { ToolContext, ToolDefinition } from './definitions';
 import { createHelpCenterTools } from './help-center';
 import { createSearchTools } from './search';
@@ -13,4 +14,5 @@ export const createAllTools = (ctx: ToolContext): ToolDefinition[] => [
   ...createSearchTools(ctx),
   ...createHelpCenterTools(ctx),
   ...createUserTools(ctx),
+  ...createAdminTools(ctx),
 ];
