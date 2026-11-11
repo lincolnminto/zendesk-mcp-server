@@ -89,6 +89,13 @@ request after an overnight gap never surfaces an auth error. And it refreshes
 stale token. Only an expired or invalid refresh token triggers a new browser
 sign-in.
 
+A server started with `--read-only` keeps its `read`-scoped token in
+`<subdomain>.read.json` next to it, and signs in afresh when that record cannot
+prove it is read-scoped: the log then says `oauth_token_scope_rejected`. Expect
+that once after upgrading (older records carry no scope), and every time when a
+single [`ZENDESK_TOKEN_FILE`](configuration.md#zendesk_token_file) is shared by a
+read-only and a read-write server; give each its own file instead.
+
 If you still re-authenticate every time, check that the file is writable
 ([`ZENDESK_TOKEN_FILE`](configuration.md#zendesk_token_file) to relocate it) and
 look for `token_persist_failed` in the logs.

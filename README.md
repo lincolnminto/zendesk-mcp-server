@@ -62,7 +62,9 @@ differently.
 - A tool surface you can cap. Expose every operation as its own tool, group them
   into namespace proxies, or collapse everything into a single unified tool. You
   can also filter by namespace or down to read-only operations, so each context
-  loads only the surface it needs (see [Tool surface](#tool-surface)).
+  loads only the surface it needs (see [Tool surface](#tool-surface)). Read-only
+  over stdio also signs in with Zendesk's `read` scope, so Zendesk itself refuses
+  a write ([how](docs/configuration.md#read-only-all-the-way-to-zendesk)).
 - Two deployment shapes, same auth story. Run it on your laptop as a stdio MCP
   server, or deploy it as a private remote MCP server reached over HTTP, with one
   Zendesk session per request and each client carrying its own user's token.

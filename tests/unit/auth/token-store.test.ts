@@ -4,6 +4,7 @@ interface TokenResult {
   access_token: string;
   refresh_token?: string;
   expires_in?: number;
+  scope?: string;
 }
 
 const startBrowserAuthMock =
@@ -38,9 +39,10 @@ vi.mock('../../../src/auth/browser-oauth', () => ({
 const loadTokenMock = vi.fn<() => unknown>();
 const saveTokenMock = vi.fn();
 const clearTokenMock = vi.fn();
+const resolveTokenPathMock = vi.fn((..._args: unknown[]) => '/tmp/fake-token.json');
 
 vi.mock('../../../src/auth/token-persistence', () => ({
-  resolveTokenPath: () => '/tmp/fake-token.json',
+  resolveTokenPath: (...args: unknown[]) => resolveTokenPathMock(...args),
   loadToken: (...args: unknown[]) => loadTokenMock(...(args as [])),
   saveToken: (...args: unknown[]) => saveTokenMock(...args),
   clearToken: (...args: unknown[]) => clearTokenMock(...args),
@@ -74,6 +76,7 @@ describe('createTokenStore', () => {
     loadTokenMock.mockReturnValue(undefined);
     saveTokenMock.mockReset();
     clearTokenMock.mockReset();
+    resolveTokenPathMock.mockClear();
   });
 
   it('returns a token set via setToken without triggering the browser flow', async () => {
@@ -417,5 +420,218 @@ describe('createTokenStore', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe('read-only mode', () => {
+    const READ_ONLY = { ...CONFIG, readOnly: true };
+
+    it('signs in with read and write by default', async () => {
+      startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+      const store = createTokenStore(CONFIG);
+
+      await store.getToken().catch(() => {});
+      expect(startBrowserAuthMock).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'read write' }),
+      );
+      expect(resolveTokenPathMock).toHaveBeenCalledWith(CONFIG.subdomain, { readOnly: false });
+    });
+
+    it('signs in with the read scope only, kept in its own token file', async () => {
+      startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+      const store = createTokenStore(READ_ONLY);
+
+      await store.getToken().catch(() => {});
+      expect(startBrowserAuthMock).toHaveBeenCalledWith(expect.objectContaining({ scope: 'read' }));
+      expect(resolveTokenPathMock).toHaveBeenCalledWith(CONFIG.subdomain, { readOnly: true });
+    });
+
+    it('persists the scope Zendesk granted alongside the token', async () => {
+      const { started, resolveToken } = deferredStarted();
+      startBrowserAuthMock.mockResolvedValue(started);
+      const store = createTokenStore(READ_ONLY);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+      resolveToken({ access_token: 'ro-token', refresh_token: 'r1', scope: 'read' });
+      await flush();
+
+      await expect(store.getToken()).resolves.toBe('ro-token');
+      expect(saveTokenMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ accessToken: 'ro-token', scope: 'read' }),
+        expect.anything(),
+      );
+    });
+
+    it('reuses a disk token whose recorded scope is read-only', async () => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'ro-disk',
+        scope: 'read',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      const store = createTokenStore(READ_ONLY);
+
+      await expect(store.getToken()).resolves.toBe('ro-disk');
+      expect(startBrowserAuthMock).not.toHaveBeenCalled();
+    });
+
+    it('ignores a disk token that is not provably read-only and signs in afresh', async () => {
+      // A token written before scopes were recorded (or a read-write file reached
+      // through ZENDESK_TOKEN_FILE) must never back a read-only server, not even
+      // through a silent refresh of its refresh token.
+      loadTokenMock.mockReturnValue({
+        accessToken: 'legacy',
+        refreshToken: 'r1',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const store = createTokenStore(READ_ONLY, logger as never);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+      expect(refreshAccessTokenMock).not.toHaveBeenCalled();
+      expect(startBrowserAuthMock).toHaveBeenCalledWith(expect.objectContaining({ scope: 'read' }));
+      expect(logger.warn).toHaveBeenCalledWith('oauth_token_scope_rejected');
+    });
+
+    it('still reuses a scope-less disk token outside read-only mode', async () => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'legacy',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      const store = createTokenStore(CONFIG);
+
+      await expect(store.getToken()).resolves.toBe('legacy');
+    });
+
+    it('refuses to cache a token granted with a broader scope than read', async () => {
+      const { started, resolveToken } = deferredStarted();
+      startBrowserAuthMock.mockResolvedValue(started);
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const store = createTokenStore(READ_ONLY, logger as never);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+      resolveToken({ access_token: 'rw-token', refresh_token: 'r1', scope: 'read write' });
+      await flush();
+
+      startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+      expect(saveTokenMock).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith('oauth_scope_too_broad', { scope: 'read write' });
+    });
+
+    it('takes a code exchange that omits scope as granting the requested one (RFC 6749 s5.1)', async () => {
+      const { started, resolveToken } = deferredStarted();
+      startBrowserAuthMock.mockResolvedValue(started);
+      const store = createTokenStore(READ_ONLY);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+      resolveToken({ access_token: 'ro-token', refresh_token: 'r1' });
+      await flush();
+
+      await expect(store.getToken()).resolves.toBe('ro-token');
+      expect(saveTokenMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ accessToken: 'ro-token', scope: 'read' }),
+        expect.anything(),
+      );
+    });
+
+    it('records the requested read write scope when a default sign-in omits it', async () => {
+      const { started, resolveToken } = deferredStarted();
+      startBrowserAuthMock.mockResolvedValue(started);
+      const store = createTokenStore(CONFIG);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+      resolveToken({ access_token: 'rw-token' });
+      await flush();
+
+      expect(saveTokenMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ accessToken: 'rw-token', scope: 'read write' }),
+        expect.anything(),
+      );
+    });
+
+    it('drops a refresh that comes back broader than read and signs in afresh', async () => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'old',
+        refreshToken: 'r1',
+        expiresAt: Date.now() - 1000,
+        scope: 'read',
+      });
+      refreshAccessTokenMock.mockResolvedValue({
+        access_token: 'rw',
+        refresh_token: 'r2',
+        expires_in: 3600,
+        scope: 'read write',
+      });
+      startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const store = createTokenStore(READ_ONLY, logger as never);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+      expect(logger.warn).toHaveBeenCalledWith('oauth_token_refresh_failed', {
+        error: 'Refreshed token scope is broader than read: read write',
+      });
+      expect(saveTokenMock).not.toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ accessToken: 'rw' }),
+        expect.anything(),
+      );
+      expect(clearTokenMock).toHaveBeenCalled();
+    });
+
+    it('invalidate keeps the recorded scope, so the record still backs a read-only server', async () => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'ro',
+        refreshToken: 'r1',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        scope: 'read',
+      });
+      const store = createTokenStore(READ_ONLY);
+
+      store.invalidate();
+
+      expect(saveTokenMock).toHaveBeenCalledWith(
+        expect.any(String),
+        { accessToken: 'ro', refreshToken: 'r1', expiresAt: 0, scope: 'read' },
+        expect.anything(),
+      );
+    });
+
+    it('treats a malformed scope on disk as not read-only instead of crashing', async () => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'odd',
+        scope: ['read'],
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+
+      const store = createTokenStore(READ_ONLY);
+
+      await expect(store.getToken()).rejects.toThrow('authentication required');
+    });
+
+    it('keeps the recorded scope across a refresh that does not restate it', async () => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'old',
+        refreshToken: 'r1',
+        expiresAt: Date.now() - 1000,
+        scope: 'read',
+      });
+      refreshAccessTokenMock.mockResolvedValue({
+        access_token: 'new',
+        refresh_token: 'r2',
+        expires_in: 3600,
+      });
+      const store = createTokenStore(READ_ONLY);
+
+      await expect(store.getToken()).resolves.toBe('new');
+      expect(saveTokenMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ accessToken: 'new', refreshToken: 'r2', scope: 'read' }),
+        expect.anything(),
+      );
+    });
   });
 });

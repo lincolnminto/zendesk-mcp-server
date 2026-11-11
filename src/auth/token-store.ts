@@ -1,5 +1,6 @@
 import { type Logger, silentLogger } from '../utils/logger';
 import { refreshAccessToken, startBrowserAuth } from './browser-oauth';
+import { isReadOnlyScope, requestedScope } from './oauth-scope';
 import {
   clearToken as clearPersistedToken,
   loadToken,
@@ -48,13 +49,34 @@ const expiryFrom = (expiresIn: number | undefined): number | undefined =>
   typeof expiresIn === 'number' ? Date.now() + expiresIn * 1000 : undefined;
 
 export const createTokenStore = (
-  config: { subdomain: string; oauthClientId: string; callbackPort?: number | undefined },
+  config: {
+    subdomain: string;
+    oauthClientId: string;
+    callbackPort?: number | undefined;
+    /** Sign in with the `read` scope only, and serve no token that lacks it. */
+    readOnly?: boolean | undefined;
+  },
   logger: Logger = silentLogger,
 ) => {
-  const tokenPath = resolveTokenPath(config.subdomain);
+  const readOnly = config.readOnly ?? false;
+  const tokenPath = resolveTokenPath(config.subdomain, { readOnly });
+
+  // A read-only store serves only a token whose recorded scope proves it is
+  // read-only. A disk record that cannot (written before scopes were recorded,
+  // or a read-write file reached through ZENDESK_TOKEN_FILE) is ignored rather
+  // than refreshed: a refresh keeps the original grant's scope (RFC 6749 s6).
+  const loadUsableToken = (): StoredToken | undefined => {
+    const loaded = loadToken(tokenPath);
+    if (loaded && readOnly && !isReadOnlyScope(loaded.scope)) {
+      logger.warn('oauth_token_scope_rejected');
+      return undefined;
+    }
+    return loaded;
+  };
+
   // Seed the in-memory cache from disk so a restart (notably the Cowork-on-Windows
   // process churn) reuses the existing token instead of re-prompting.
-  let token: StoredToken | undefined = loadToken(tokenPath);
+  let token: StoredToken | undefined = loadUsableToken();
   if (token) logger.debug('oauth_token_loaded_from_disk');
 
   // The authorize URL of the in-flight flow (set once the callback server is
@@ -113,12 +135,20 @@ export const createTokenStore = (
         },
         logger,
       );
+      // A refresh that omits the scope keeps the original grant's (RFC 6749 s6).
+      const scope = result.scope ?? current.scope;
+      // Same guard as on sign-in: a refresh can never widen the grant, but the
+      // read-only guarantee does not rest on the authorization server honouring that.
+      if (readOnly && !isReadOnlyScope(scope)) {
+        throw new Error(`Refreshed token scope is broader than read: ${String(scope)}`);
+      }
       // Zendesk rotates the refresh token on every use — persist the new one (or
       // keep the current one if the response omitted it).
       token = {
         accessToken: result.access_token,
         refreshToken: result.refresh_token ?? current.refreshToken,
         expiresAt: expiryFrom(result.expires_in),
+        scope,
       };
       // Freshly refreshed: if expiry is still unknown, don't re-probe every call.
       probedUnknownExpiry = true;
@@ -147,6 +177,7 @@ export const createTokenStore = (
         subdomain: config.subdomain,
         oauthClientId: config.oauthClientId,
         callbackPort: config.callbackPort,
+        scope: requestedScope(readOnly),
       },
       logger,
     )
@@ -154,10 +185,21 @@ export const createTokenStore = (
         authorizeUrl = started.authorizeUrl;
         started.tokenPromise
           .then((result) => {
+            // A token response that omits the scope was granted the one requested
+            // (RFC 6749 s5.1).
+            const scope = result.scope ?? requestedScope(readOnly);
+            // Zendesk never widens a requested scope, so this only trips on a
+            // misbehaving authorization server; refusing the token keeps the
+            // read-only guarantee unconditional instead of trusting that.
+            if (readOnly && !isReadOnlyScope(scope)) {
+              logger.error('oauth_scope_too_broad', { scope });
+              return;
+            }
             token = {
               accessToken: result.access_token,
               refreshToken: result.refresh_token,
               expiresAt: expiryFrom(result.expires_in),
+              scope,
             };
             // Freshly minted: trust it without an immediate probe-refresh.
             probedUnknownExpiry = true;
@@ -240,7 +282,14 @@ export const createTokenStore = (
   // when there's no refresh token do we wipe the record entirely.
   const invalidate = (): void => {
     if (token?.refreshToken) {
-      token = { accessToken: token.accessToken, refreshToken: token.refreshToken, expiresAt: 0 };
+      // The scope travels with the record: dropping it would make a read-only
+      // store distrust its own token after a restart.
+      token = {
+        accessToken: token.accessToken,
+        refreshToken: token.refreshToken,
+        expiresAt: 0,
+        scope: token.scope,
+      };
       persist(token);
     } else {
       token = undefined;
