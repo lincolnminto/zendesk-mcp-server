@@ -19,7 +19,8 @@ zendesk-mcp-server <subdomain> [options]
 
 Options:
   --mode <mode>           single | namespace (default) | all
-  --namespace <ns>        Filter by namespace (repeatable): tickets, help_center, users
+  --namespace <ns>        Filter by namespace (repeatable): tickets, help_center,
+                          users, admin
   --tool <name>           Filter by tool name (repeatable, forces --mode all)
   --read-only             Only expose read operations
   --no-topology           Disable the Help Center structural context

@@ -95,6 +95,15 @@ out every `write` tool before the proxies are built.
 
 </details>
 
+<details>
+<summary><strong>Admin</strong></summary>
+
+| Tool | Description | Mode |
+|------|-------------|------|
+| `export_account_config` | Export the account's admin configuration (business rules, forms, fields, statuses, SLAs, schedules, groups, roles, brands, webhooks, settings and more) as raw Zendesk JSON, one file per resource, into a new timestamped local folder, plus a `manifest.json`; a resource the account cannot read (403) or whose feature is off (404) is skipped, not fatal. Reads only from Zendesk and never overwrites a previous export; stdio only, needs an admin sign-in | read |
+
+</details>
+
 ---
 
 ← Back to the [README](../README.md).

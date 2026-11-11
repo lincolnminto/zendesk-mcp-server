@@ -37,6 +37,10 @@ then calls the right tools on your behalf.
 - Draft and maintain knowledge-base articles. You can write a new one, or revise
   a large one a single section at a time, so the whole HTML body never has to
   round-trip through the model.
+- Snapshot the account's admin configuration (triggers, automations, macros,
+  views, forms, fields, SLAs and more) into local JSON files, to audit,
+  document, diff or migrate a Zendesk setup without pulling it all through the
+  conversation.
 
 ## Why this server
 
@@ -215,8 +219,8 @@ job: **[docs/http-deployment.md](docs/http-deployment.md)**.
 
 ## Tool surface
 
-Tools are grouped into four namespaces: **Tickets**, **Help Center**, **Users &
-Organizations** and **Search**. The server registers them in one of three modes,
+Tools are grouped into namespaces: **Tickets**, **Help Center**, **Users &
+Organizations**, **Search** and **Admin**. The server registers them in one of three modes,
 so you can trade granularity against context budget:
 
 - **`all`**: every operation as its own tool, for clients with good tool selection;

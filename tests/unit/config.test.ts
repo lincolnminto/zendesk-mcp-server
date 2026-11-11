@@ -93,6 +93,11 @@ describe('loadConfig', () => {
     expect(config.dev).toBe(true);
   });
 
+  it('accepts the admin namespace', () => {
+    const config = loadConfig(['mycompany', '--namespace', 'admin']);
+    expect(config.namespaces).toEqual(['admin']);
+  });
+
   it('parses multiple --namespace flags', () => {
     const config = loadConfig(['mycompany', '--namespace', 'tickets', '--namespace', 'users']);
     expect(config.namespaces).toEqual(['tickets', 'users']);

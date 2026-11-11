@@ -7,7 +7,7 @@ export type ToolMode = z.infer<typeof ToolMode>;
 export const LogLevel = z.enum(['debug', 'info', 'warn', 'error']);
 export type LogLevel = z.infer<typeof LogLevel>;
 
-export const Namespace = z.enum(['tickets', 'help_center', 'users']);
+export const Namespace = z.enum(['tickets', 'help_center', 'users', 'admin']);
 export type Namespace = z.infer<typeof Namespace>;
 
 export const Transport = z.enum(['stdio', 'http']);
