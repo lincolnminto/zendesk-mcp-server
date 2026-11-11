@@ -133,6 +133,21 @@ describe('loadConfig', () => {
       },
     );
 
+    it('refuses --namespace admin without one, instead of booting with no tools', () => {
+      expect(() => loadConfig(['mycompany', '--namespace', 'admin'])).toThrow(
+        /admin namespace.*needs an export directory/,
+      );
+      expect(
+        loadConfig(['mycompany', '--namespace', 'admin', '--export-dir', '/x']).namespaces,
+      ).toEqual(['admin']);
+    });
+
+    it('refuses --tool export_account_config without one', () => {
+      expect(() => loadConfig(['mycompany', '--tool', 'export_account_config'])).toThrow(
+        /export_account_config.*needs an export directory/,
+      );
+    });
+
     it('accepts a local path with a doubled separator past its start', () => {
       expect(loadConfig(['mycompany', '--export-dir', '/srv//exports']).exportDir).toBe(
         '/srv//exports',
@@ -147,7 +162,7 @@ describe('loadConfig', () => {
   });
 
   it('accepts the admin namespace', () => {
-    const config = loadConfig(['mycompany', '--namespace', 'admin']);
+    const config = loadConfig(['mycompany', '--namespace', 'admin', '--export-dir', '/exports']);
     expect(config.namespaces).toEqual(['admin']);
   });
 

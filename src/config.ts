@@ -365,13 +365,28 @@ const resolveTransportSettings = (cli: CliResult): TransportSettings => {
   };
 };
 
+// What, if anything, in the invocation asks for the account export by name.
+const exportAskedFor = (cli: CliResult): string | undefined => {
+  if (cli.namespaces?.includes('admin')) return 'The admin namespace';
+  if (cli.tools?.includes('export_account_config')) return 'export_account_config';
+  return undefined;
+};
+
 // The export writes files where the server runs: over HTTP that is the server
 // host, not the caller's machine, and every remote caller would write there.
+// Asking for the export without a directory is refused too: the admin namespace
+// would silently come up empty, and so would a server filtered down to it.
 const resolveExportDir = (cli: CliResult, transport: string): string | undefined => {
   const exportDir = cli.exportDir ?? requireNonEmptyEnv('ZENDESK_EXPORT_DIR');
   if (transport === 'http' && exportDir !== undefined) {
     throw new Error(
       'The account export (--export-dir / ZENDESK_EXPORT_DIR) is stdio only: over HTTP the files would be written on the server host. Unset it for HTTP mode.',
+    );
+  }
+  const asked = exportDir === undefined ? exportAskedFor(cli) : undefined;
+  if (asked) {
+    throw new Error(
+      `${asked} needs an export directory: set --export-dir (or ZENDESK_EXPORT_DIR) to an absolute local path.`,
     );
   }
   return exportDir;
