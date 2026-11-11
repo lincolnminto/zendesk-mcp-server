@@ -16,7 +16,7 @@ import { createAllTools, type ToolContext } from '../../../src/tools';
 const ctx: ToolContext = {
   subdomain: 'testsubdomain',
   getToken: () => 'test-token',
-  localFileAccess: true,
+  exportDir: '/exports',
 };
 const tools = createAllTools(ctx);
 

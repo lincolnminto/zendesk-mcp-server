@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 import * as z from 'zod/v4';
 import { ZendeskApiError, zendeskGet } from '../client/zendesk-api';
 import { getBaseUrl } from '../constants';
@@ -245,38 +245,59 @@ const fetchList = async (
   }
 };
 
+interface NestedResult {
+  items: unknown[];
+  truncated: boolean;
+  /** Parents whose nested list could not be read, kept without it. */
+  missing: number;
+  /** Why the first one could not be read. */
+  missingReason?: string | undefined;
+}
+
 // Attach each parent's nested list, so the export carries it without a second
-// lookup. A parent without the identifying property keeps no nested list.
+// lookup. A parent without the identifying property keeps no nested list, and
+// one whose nested list fails (other than on a 401, which is about the token)
+// is kept without it and counted: the parent list itself was readable.
 const attachNested = async (
   subdomain: string,
   token: string,
   parents: unknown[],
   nested: NestedListSpec,
-): Promise<{ items: unknown[]; truncated: boolean }> => {
-  let truncated = false;
-  const items: unknown[] = [];
+): Promise<NestedResult> => {
+  const result: NestedResult = { items: [], truncated: false, missing: 0 };
   for (const parent of parents) {
     const id = (parent as Body)[nested.idField];
     if (typeof id !== 'string' && typeof id !== 'number') {
-      items.push(parent);
+      result.items.push(parent);
       continue;
     }
-    const child = await fetchList(
-      subdomain,
-      token,
-      nested.path(encodeURIComponent(String(id))),
-      nested.responseKey,
-    );
-    truncated ||= child.truncated;
-    items.push({ ...(parent as Body), [nested.attachAs]: child.items });
+    try {
+      const child = await fetchList(
+        subdomain,
+        token,
+        nested.path(encodeURIComponent(String(id))),
+        nested.responseKey,
+      );
+      result.truncated ||= child.truncated;
+      result.items.push({ ...(parent as Body), [nested.attachAs]: child.items });
+    } catch (err) {
+      if (!(err instanceof Error) || (err instanceof ZendeskApiError && err.status === 401)) {
+        throw err;
+      }
+      result.missing += 1;
+      result.missingReason ??= `${nested.attachAs} of ${nested.idField} ${String(id)}: ${err.message}`;
+      result.items.push(parent);
+    }
   }
-  return { items, truncated };
+  return result;
 };
 
 interface Fetched {
   data: unknown;
   items: number;
   truncated: boolean;
+  nestedMissing: number;
+  nestedReason?: string | undefined;
 }
 
 const fetchResource = async (
@@ -286,21 +307,35 @@ const fetchResource = async (
 ): Promise<Fetched> => {
   if (spec.single) {
     const body = await zendeskGet<Body>(subdomain, token, spec.path);
-    return { data: extractItems(body, spec.responseKey), items: 1, truncated: false };
+    return {
+      data: extractItems(body, spec.responseKey),
+      items: 1,
+      truncated: false,
+      nestedMissing: 0,
+    };
   }
   const list = await fetchList(subdomain, token, spec.path, spec.responseKey);
-  const result = spec.nested
+  const result: NestedResult = spec.nested
     ? await attachNested(subdomain, token, list.items, spec.nested)
-    : { items: list.items, truncated: false };
+    : { items: list.items, truncated: false, missing: 0 };
   return {
     data: result.items,
     items: result.items.length,
     truncated: list.truncated || result.truncated,
+    nestedMissing: result.missing,
+    nestedReason: result.missingReason,
   };
 };
 
 type ManifestEntry = { resource: ConfigResourceKey; endpoint: string } & (
-  | { status: 'exported'; items: number; file: string; truncated: boolean }
+  | {
+      status: 'exported';
+      items: number;
+      file: string;
+      truncated: boolean;
+      nested_missing?: number;
+      nested_missing_reason?: string;
+    }
   | { status: 'skipped' | 'failed'; reason: string }
 );
 
@@ -360,6 +395,10 @@ const exportResource = async (
       items: fetched.items,
       file,
       truncated: fetched.truncated,
+      ...(fetched.nestedMissing > 0 && {
+        nested_missing: fetched.nestedMissing,
+        nested_missing_reason: fetched.nestedReason ?? '',
+      }),
     };
   } catch (err) {
     if (!(err instanceof Error)) throw err;
@@ -369,8 +408,7 @@ const exportResource = async (
         resource,
         endpoint,
         status: 'failed',
-        reason:
-          'Unauthorized (401) on this endpoint, although the token still works for /users/me.',
+        reason: 'Unauthorized (401) on this endpoint, while /users/me does not reject the token.',
       };
     }
     if (err instanceof ZendeskApiError && (err.status === 403 || err.status === 404)) {
@@ -393,7 +431,13 @@ const reasonCell = (reason: string): string => {
 };
 
 const statusCell = (entry: ManifestEntry): string => {
-  if (entry.status === 'exported') return entry.truncated ? 'exported (truncated)' : 'exported';
+  if (entry.status === 'exported') {
+    const notes = [
+      ...(entry.truncated ? ['truncated'] : []),
+      ...(entry.nested_missing ? [`${entry.nested_missing} nested lists missing`] : []),
+    ];
+    return notes.length > 0 ? `exported (${notes.join(', ')})` : 'exported';
+  }
   return `${entry.status}: ${reasonCell(entry.reason)}`;
 };
 
@@ -416,19 +460,15 @@ const formatSummary = (subdomain: string, snapshot: string, entries: ManifestEnt
 const writeManifest = (snapshot: string, manifest: object): Promise<void> =>
   writeFile(join(snapshot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
-// A UNC path (\\host\share, or //host/share) counts as absolute on Windows, and
-// would make the server open an SMB connection to whatever host the caller names.
-const isNetworkPath = (path: string): boolean => path.startsWith('\\\\') || path.startsWith('//');
-
 /**
- * stdio only: over HTTP the files would land on the server host, not on the
- * caller's machine, and listing a tool that can never run there would only waste
- * an agent's call. So the namespace is simply absent without local file access.
+ * Opt-in: the admin namespace exists only when the operator configured an export
+ * directory (`--export-dir`, stdio only). Off by default, so no existing surface
+ * changes, notably a `single`-mode proxy's read-only hints.
  */
 export const createAdminTools = (ctx: ToolContext): ToolDefinition[] =>
-  ctx.localFileAccess ? [exportAccountConfig(ctx)] : [];
+  ctx.exportDir ? [exportAccountConfig(ctx, ctx.exportDir)] : [];
 
-const exportAccountConfig = (ctx: ToolContext): ToolDefinition => ({
+const exportAccountConfig = (ctx: ToolContext, exportDir: string): ToolDefinition => ({
   name: 'export_account_config',
   namespace: 'admin',
   // `readOnly` is about Zendesk (it keeps the tool on a --read-only server,
@@ -440,16 +480,10 @@ const exportAccountConfig = (ctx: ToolContext): ToolDefinition => ({
   description:
     "Export the Zendesk account's admin configuration to local JSON files, one per resource: business rules (triggers, automations, macros, views), ticket forms, fields and statuses, SLA policies, schedules with their holidays, groups, roles, brands, webhooks, account settings and more. " +
     'Use it to audit, document, diff or migrate a Zendesk setup, then read the files for the details instead of pulling them through the conversation; to look up one field id, macro, view or SLA policy during ticket work, use list_ticket_fields, list_macros, list_views or list_sla_policies instead. ' +
-    'It only reads from Zendesk; on the machine running the server it creates a new timestamped folder under `directory` and never overwrites an earlier export. ' +
+    "It only reads from Zendesk; on the machine running the server it creates a new timestamped folder in the operator's export directory and never overwrites an earlier export. " +
     'Returns the folder path and a per-resource summary: items exported, or why a resource was skipped (403: no access; 404: not available on this account) or failed. ' +
-    'Needs an admin sign-in; available over stdio only.',
+    'Needs an admin sign-in; available only when the server was started with an export directory.',
   inputSchema: z.object({
-    directory: z
-      .string()
-      .min(1)
-      .describe(
-        'Absolute local path of a directory on the machine running the server (not a network share), created if missing. Each export goes into a new `<subdomain>-<timestamp>` folder inside it, so earlier exports stay untouched.',
-      ),
     resources: z
       .array(z.enum(RESOURCE_KEYS))
       .min(1)
@@ -465,23 +499,15 @@ const exportAccountConfig = (ctx: ToolContext): ToolDefinition => ({
     openWorldHint: true,
   },
   handler: async (params) => {
-    const { directory, resources } = params as {
-      directory: string;
-      resources?: ConfigResourceKey[];
-    };
-    if (!isAbsolute(directory) || isNetworkPath(directory)) {
-      throw new Error(
-        'directory must be an absolute local path on the machine running the server, not a relative path or a network share.',
-      );
-    }
+    const { resources } = params as { resources?: ConfigResourceKey[] };
     const selected = RESOURCE_KEYS.filter((key) => resources?.includes(key) ?? true);
     // Sign-in first: a call that still needs one must leave no empty folder behind.
     await ctx.getToken();
     const exportedAt = new Date();
-    await mkdir(directory, { recursive: true });
+    await mkdir(exportDir, { recursive: true });
     // Not recursive: the snapshot folder must be new, so a second export can
     // never write into (and overwrite) an earlier one.
-    const snapshot = join(directory, snapshotDirName(ctx.subdomain, exportedAt));
+    const snapshot = join(exportDir, snapshotDirName(ctx.subdomain, exportedAt));
     await mkdir(snapshot);
 
     const manifest = { subdomain: ctx.subdomain, exported_at: exportedAt.toISOString() };

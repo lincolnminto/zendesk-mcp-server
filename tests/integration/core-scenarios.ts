@@ -252,7 +252,6 @@ export const registerCoreScenarios = (harness: IntegrationHarness): void => {
         expect(names).toContain('zendesk_tickets');
         expect(names).toContain('zendesk_help_center');
         expect(names).toContain('zendesk_users');
-        expect(names).toContain('zendesk_admin');
         // No individual tools leak through the proxy facade.
         expect(names).not.toContain('get_current_user');
       });

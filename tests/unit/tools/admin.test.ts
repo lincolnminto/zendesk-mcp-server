@@ -15,13 +15,14 @@ import type { ToolContext } from '../../../src/tools/definitions';
 import { mswServer } from '../../setup';
 
 const API = 'https://testsubdomain.zendesk.com/api/v2';
-const stdioCtx: ToolContext = {
+// Built per test: the export directory is the fresh temp folder of that test.
+const exportCtx = (): ToolContext => ({
   subdomain: 'testsubdomain',
   getToken: () => 'test-token',
-  localFileAccess: true,
-};
+  exportDir: root,
+});
 
-const exportTool = (ctx: ToolContext = stdioCtx) => {
+const exportTool = (ctx: ToolContext = exportCtx()) => {
   const tool = createAdminTools(ctx).find((t) => t.name === 'export_account_config');
   if (!tool) throw new Error('export_account_config not found');
   return tool;
@@ -53,7 +54,7 @@ afterEach(async () => {
 
 describe('admin tools', () => {
   it('registers the export: Zendesk-read-only, but honest that it writes local files', () => {
-    const tools = createAdminTools(stdioCtx);
+    const tools = createAdminTools(exportCtx());
     expect(tools).toHaveLength(1);
     expect(tools[0]).toMatchObject({
       name: 'export_account_config',
@@ -68,7 +69,7 @@ describe('admin tools', () => {
     });
   });
 
-  it('registers nothing without local file access (the HTTP transport)', () => {
+  it('registers nothing without an operator-configured export directory', () => {
     expect(createAdminTools({ subdomain: 'testsubdomain', getToken: () => 'test-token' })).toEqual(
       [],
     );
@@ -90,7 +91,6 @@ describe('export_account_config', () => {
     );
 
     const result = await exportTool().handler({
-      directory: root,
       resources: ['triggers', 'account_settings', 'group_sla_policies'],
     });
 
@@ -165,7 +165,7 @@ describe('export_account_config', () => {
       }),
     );
 
-    const result = await exportTool().handler({ directory: root });
+    const result = await exportTool().handler({});
 
     const keys = Object.keys(CONFIG_RESOURCES);
     expect(requests).toBe(keys.length);
@@ -201,7 +201,7 @@ describe('export_account_config', () => {
       }),
     );
 
-    await exportTool().handler({ directory: root, resources: ['macros'] });
+    await exportTool().handler({ resources: ['macros'] });
 
     const snapshot = await snapshotOf(root);
     expect(await readJson(join(snapshot, 'macros.json'))).toEqual([{ id: 1 }, { id: 2 }]);
@@ -225,7 +225,7 @@ describe('export_account_config', () => {
       }),
     );
 
-    await exportTool().handler({ directory: root, resources: ['webhooks'] });
+    await exportTool().handler({ resources: ['webhooks'] });
 
     const snapshot = await snapshotOf(root);
     expect(await readJson(join(snapshot, 'webhooks.json'))).toEqual([{ id: 'w1' }, { id: 'w2' }]);
@@ -243,7 +243,7 @@ describe('export_account_config', () => {
       }),
     );
 
-    const result = await exportTool().handler({ directory: root, resources: ['views'] });
+    const result = await exportTool().handler({ resources: ['views'] });
 
     expect(calls).toBe(MAX_PAGES);
     const snapshot = await snapshotOf(root);
@@ -269,7 +269,7 @@ describe('export_account_config', () => {
       }),
     );
 
-    const result = await exportTool().handler({ directory: root, resources: ['triggers'] });
+    const result = await exportTool().handler({ resources: ['triggers'] });
 
     expect(foreignCalls).toBe(0);
     const snapshot = await snapshotOf(root);
@@ -288,10 +288,7 @@ describe('export_account_config', () => {
       http.get(`${API}/brands`, () => HttpResponse.json({ brands: [{ id: 7 }] })),
     );
 
-    const result = await exportTool().handler({
-      directory: root,
-      resources: ['custom_objects', 'brands'],
-    });
+    const result = await exportTool().handler({ resources: ['custom_objects', 'brands'] });
 
     expect(textOf(result)).toContain('1 exported, 1 skipped, 0 failed.');
     expect(textOf(result)).toContain(
@@ -305,10 +302,7 @@ describe('export_account_config', () => {
       http.get(`${API}/brands`, () => HttpResponse.json({ brands: [] })),
     );
 
-    const result = await exportTool().handler({
-      directory: root,
-      resources: ['targets', 'brands'],
-    });
+    const result = await exportTool().handler({ resources: ['targets', 'brands'] });
 
     expect(textOf(result)).toContain('1 exported, 0 skipped, 1 failed.');
     expect(textOf(result)).toContain('| targets | failed: Zendesk API error 400');
@@ -321,14 +315,11 @@ describe('export_account_config', () => {
       http.get(`${API}/brands`, () => HttpResponse.json({ brands: [{ id: 7 }] })),
     );
 
-    const result = await exportTool().handler({
-      directory: root,
-      resources: ['brands', 'webhooks'],
-    });
+    const result = await exportTool().handler({ resources: ['brands', 'webhooks'] });
 
     expect(textOf(result)).toContain('1 exported, 0 skipped, 1 failed.');
     expect(textOf(result)).toContain(
-      '| webhooks | failed: Unauthorized (401) on this endpoint, although the token still works for /users/me. | - |',
+      '| webhooks | failed: Unauthorized (401) on this endpoint, while /users/me does not reject the token. | - |',
     );
   });
 
@@ -339,9 +330,9 @@ describe('export_account_config', () => {
       http.get(`${API}/users/me`, () => new HttpResponse(null, { status: 401 })),
     );
 
-    await expect(
-      exportTool().handler({ directory: root, resources: ['brands', 'triggers'] }),
-    ).rejects.toMatchObject({ name: 'ZendeskApiError', status: 401 });
+    await expect(exportTool().handler({ resources: ['brands', 'triggers'] })).rejects.toMatchObject(
+      { name: 'ZendeskApiError', status: 401 },
+    );
 
     const snapshot = await snapshotOf(root);
     const manifest = (await readJson(join(snapshot, 'manifest.json'))) as {
@@ -359,13 +350,13 @@ describe('export_account_config', () => {
       name: 'AuthRequiredError',
     });
     const tool = exportTool({
-      ...stdioCtx,
+      ...exportCtx(),
       getToken: () => {
         throw signIn;
       },
     });
 
-    await expect(tool.handler({ directory: root, resources: ['triggers'] })).rejects.toBe(signIn);
+    await expect(tool.handler({ resources: ['triggers'] })).rejects.toBe(signIn);
     expect(await readdir(root)).toEqual([]);
   });
 
@@ -373,35 +364,11 @@ describe('export_account_config', () => {
     mswServer.use(http.get(`${API}/groups`, () => HttpResponse.json({ groups: [] })));
     const nested = join(root, 'exports', 'zendesk');
 
-    await exportTool().handler({ directory: nested, resources: ['groups'] });
+    await exportTool({ ...exportCtx(), exportDir: nested }).handler({ resources: ['groups'] });
 
     const snapshot = await snapshotOf(nested);
     expect(await readJson(join(snapshot, 'groups.json'))).toEqual([]);
   });
-
-  it('refuses a relative directory before any request', async () => {
-    let calls = 0;
-    mswServer.use(
-      http.get(`${API}/*`, () => {
-        calls += 1;
-        return HttpResponse.json({});
-      }),
-    );
-
-    await expect(
-      exportTool().handler({ directory: 'exports', resources: ['triggers'] }),
-    ).rejects.toThrow('directory must be an absolute local path');
-    expect(calls).toBe(0);
-  });
-
-  it.each([['\\\\attacker\\share'], ['//attacker/share']])(
-    'refuses a network share (%s) before any request',
-    async (directory) => {
-      await expect(exportTool().handler({ directory, resources: ['triggers'] })).rejects.toThrow(
-        'not a relative path or a network share',
-      );
-    },
-  );
 
   it('asks for cursor pagination first, falling back to offset when the endpoint refuses it', async () => {
     const seen: Array<string | null> = [];
@@ -419,7 +386,7 @@ describe('export_account_config', () => {
       }),
     );
 
-    await exportTool().handler({ directory: root, resources: ['groups', 'targets'] });
+    await exportTool().handler({ resources: ['groups', 'targets'] });
 
     expect(seen).toEqual(['100', '100', null]);
     const snapshot = await snapshotOf(root);
@@ -450,7 +417,6 @@ describe('export_account_config', () => {
     );
 
     await exportTool().handler({
-      directory: root,
       resources: ['schedules', 'routing_attributes', 'custom_objects'],
     });
 
@@ -467,10 +433,41 @@ describe('export_account_config', () => {
     ]);
   });
 
+  it('keeps a parent whose nested list fails, and counts it', async () => {
+    mswServer.use(
+      http.get(`${API}/business_hours/schedules`, () =>
+        HttpResponse.json({ schedules: [{ id: 11 }, { id: 12 }] }),
+      ),
+      http.get(`${API}/business_hours/schedules/11/holidays`, () =>
+        HttpResponse.json({ holidays: [] }),
+      ),
+      http.get(`${API}/business_hours/schedules/12/holidays`, () =>
+        HttpResponse.json({ error: 'Forbidden' }, { status: 403 }),
+      ),
+    );
+
+    const result = await exportTool().handler({ resources: ['schedules'] });
+
+    expect(textOf(result)).toContain('| schedules | exported (1 nested lists missing) | 2 |');
+    const snapshot = await snapshotOf(root);
+    expect(await readJson(join(snapshot, 'schedules.json'))).toEqual([
+      { id: 11, holidays: [] },
+      { id: 12 },
+    ]);
+    const manifest = (await readJson(join(snapshot, 'manifest.json'))) as {
+      resources: Record<string, unknown>[];
+    };
+    expect(manifest.resources[0]).toMatchObject({
+      nested_missing: 1,
+      nested_missing_reason:
+        'holidays of id 12: Permission denied. Your Zendesk account does not have access to this resource.',
+    });
+  });
+
   it('records a list resource whose documented key holds no list as failed', async () => {
     mswServer.use(http.get(`${API}/views`, () => HttpResponse.json({ views: { id: 1 } })));
 
-    const result = await exportTool().handler({ directory: root, resources: ['views'] });
+    const result = await exportTool().handler({ resources: ['views'] });
 
     expect(textOf(result)).toContain(
       '| views | failed: Unexpected response shape: "views" is not a list | - |',
@@ -482,7 +479,7 @@ describe('export_account_config', () => {
       http.get(`${API}/targets`, () => new HttpResponse('<html>Not here</html>', { status: 404 })),
     );
 
-    const result = await exportTool().handler({ directory: root, resources: ['targets'] });
+    const result = await exportTool().handler({ resources: ['targets'] });
 
     expect(textOf(result)).toContain(
       '| targets | skipped: Not available on this account (404): the feature is off or not on this plan, or the endpoint does not exist. | - |',
@@ -496,20 +493,20 @@ describe('export_account_config', () => {
       mswServer.use(http.get(`${API}/groups`, () => HttpResponse.json({ groups })));
 
       vi.setSystemTime(new Date('2026-11-11T17:30:05.123Z'));
-      await exportTool().handler({ directory: root, resources: ['groups'] });
+      await exportTool().handler({ resources: ['groups'] });
       const first = join(root, 'testsubdomain-2026-11-11T17-30-05-123Z');
       const before = await readFile(join(first, 'groups.json'), 'utf8');
 
       // Same instant: the folder name collides, and the export must refuse rather
       // than write into the earlier snapshot.
       groups = [{ id: 2 }];
-      await expect(
-        exportTool().handler({ directory: root, resources: ['groups'] }),
-      ).rejects.toMatchObject({ code: 'EEXIST' });
+      await expect(exportTool().handler({ resources: ['groups'] })).rejects.toMatchObject({
+        code: 'EEXIST',
+      });
       expect(await readFile(join(first, 'groups.json'), 'utf8')).toBe(before);
 
       vi.setSystemTime(new Date('2026-11-11T17:31:00.000Z'));
-      await exportTool().handler({ directory: root, resources: ['groups'] });
+      await exportTool().handler({ resources: ['groups'] });
       expect((await readdir(root)).sort()).toEqual([
         'testsubdomain-2026-11-11T17-30-05-123Z',
         'testsubdomain-2026-11-11T17-31-00-000Z',
@@ -524,7 +521,7 @@ describe('export_account_config', () => {
     const body = `<html>\n<body>Bad | gateway ${'x'.repeat(300)}</body>\n</html>`;
     mswServer.use(http.get(`${API}/targets`, () => new HttpResponse(body, { status: 418 })));
 
-    const result = await exportTool().handler({ directory: root, resources: ['targets'] });
+    const result = await exportTool().handler({ resources: ['targets'] });
 
     const row =
       textOf(result)

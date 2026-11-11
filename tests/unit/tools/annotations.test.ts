@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createAllTools, type ToolContext } from '../../../src/tools';
 
-// localFileAccess: the stdio surface is the full one (the admin export is stdio-only).
+// exportDir: the full surface, admin export included (it is opt-in).
 const ctx: ToolContext = {
   subdomain: 'testsubdomain',
   getToken: () => 'test-token',
-  localFileAccess: true,
+  exportDir: '/exports',
 };
 const tools = createAllTools(ctx);
 

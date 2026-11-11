@@ -76,6 +76,7 @@ export const createReloadableServer = (
     subdomain: config.subdomain,
     getToken,
     localFileAccess: config.transport === 'stdio',
+    exportDir: config.exportDir,
   };
   const params = { config, getToken, onUnauthorized, logger };
 

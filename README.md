@@ -40,7 +40,8 @@ then calls the right tools on your behalf.
 - Snapshot the account's admin configuration (triggers, automations, macros,
   views, forms, fields, SLAs and more) into local JSON files, to audit,
   document, diff or migrate a Zendesk setup without pulling it all through the
-  conversation.
+  conversation (opt-in: start the server with an
+  [export directory](docs/configuration.md#zendesk_export_dir)).
 
 ## Why this server
 

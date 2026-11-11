@@ -441,6 +441,7 @@ export const createMcpServer = (
     subdomain: config.subdomain,
     getToken,
     localFileAccess: config.transport === 'stdio',
+    exportDir: config.exportDir,
   });
   registerToolset(server, { config, getToken, onUnauthorized, logger }, tools);
   return server;

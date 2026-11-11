@@ -80,6 +80,12 @@ describe('[stdio] export_account_config', () => {
     connected = undefined;
   });
 
+  it('lists no admin proxy unless the operator configured an export directory', async () => {
+    connected = await stdioHarness.connect(makeConfig({ mode: 'namespace' }));
+    const { tools } = await connected.client.listTools();
+    expect(tools.map((t) => t.name)).not.toContain('zendesk_admin');
+  });
+
   it('exports through the admin proxy of a read-only server and writes the snapshot locally', async () => {
     mswServer.use(
       http.get('https://testsubdomain.zendesk.com/api/v2/triggers', () =>
@@ -87,7 +93,9 @@ describe('[stdio] export_account_config', () => {
       ),
     );
 
-    connected = await stdioHarness.connect(makeConfig({ mode: 'namespace', readOnly: true }));
+    connected = await stdioHarness.connect(
+      makeConfig({ mode: 'namespace', readOnly: true, exportDir: dir }),
+    );
     const { tools } = await connected.client.listTools();
     expect(tools.map((t) => t.name)).toContain('zendesk_admin');
 
@@ -95,7 +103,7 @@ describe('[stdio] export_account_config', () => {
       name: 'zendesk_admin',
       arguments: {
         operation: 'export_account_config',
-        params: { directory: dir, resources: ['triggers'] },
+        params: { resources: ['triggers'] },
       },
     });
 

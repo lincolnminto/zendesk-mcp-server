@@ -44,4 +44,10 @@ export interface ToolContext {
    * handing every remote caller the server's files, so absent means refused.
    */
   localFileAccess?: boolean;
+  /**
+   * Operator-configured directory for `export_account_config` snapshots
+   * (`--export-dir`); the admin namespace exists only when it is set. stdio
+   * only: config refuses it over HTTP.
+   */
+  exportDir?: string | undefined;
 }
