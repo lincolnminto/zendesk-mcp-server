@@ -43,7 +43,8 @@ then calls the right tools on your behalf.
   conversation (opt-in: start the server with an
   [export directory](docs/configuration.md#zendesk_export_dir)).
 
-For resumable bulk account snapshots, see [the `export-data` subcommand](docs/configuration.md#bulk-data-export-export-data).
+For resumable bulk account snapshots, see [the `export-data` subcommand](docs/configuration.md#bulk-data-export-export-data);
+to record how Zendesk behaves on that data, see [`record-goldens`](docs/configuration.md#golden-observations-record-goldens).
 
 ## Why this server
 
@@ -263,6 +264,26 @@ variables (`ZENDESK_SUBDOMAIN`, `ZENDESK_TOKEN_FILE`, `PUBLIC_URL`, the
 attachment-vision caps) lives in
 **[docs/configuration.md](docs/configuration.md)**. Every variable has its own
 anchor, so you can deep-link a specific setting.
+
+## Snapshot e goldens (pt-BR)
+
+Dois subcomandos de linha de comando, só com GET no Zendesk e o token de escopo
+`read`, para quem vai substituir o Zendesk e precisa compará-lo com o sistema novo:
+
+- `zendesk-mcp-server export-data <subdominio> --export-dir <pasta-absoluta>`
+  grava um snapshot completo da conta (tickets, usuários, organizações, grupos,
+  vínculos, eventos com comentários, metadados de anexos, métricas, avaliações e
+  configuração) em NDJSON, numa pasta datada com `manifest.json`. Respeita os
+  limites de requisição e retoma de onde parou com `--resume <pasta>`; `--since`
+  traz só o delta.
+- `zendesk-mcp-server record-goldens <subdominio> --export-dir <pasta-absoluta> --data-snapshot <pasta-do-export>`
+  grava o comportamento do Zendesk sobre esse snapshot: visualizações
+  compartilhadas ativas (contagem, ids em ordem, linhas), prévias de macros,
+  estado de SLA e audits de uma amostra e buscas representativas.
+
+Os dois existem também como ferramentas MCP (`export_data`, `record_goldens`)
+quando o servidor sobe com `--export-dir`. Flags, arquivos gerados e retomada:
+[docs/configuration.md](docs/configuration.md#bulk-data-export-export-data).
 
 ## Troubleshooting
 
