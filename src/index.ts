@@ -4,7 +4,7 @@ import { createTokenStore } from './auth/token-store';
 import type { Config } from './config';
 import { loadConfig } from './config';
 import { startDevServer } from './dev/reload';
-import { runExportCli } from './export/cli';
+import { runExportCli, runGoldensCli } from './export/cli';
 import { createMcpServer } from './server';
 import { startHttpTransport } from './transports/http';
 import { startStdioTransport } from './transports/stdio';
@@ -61,6 +61,10 @@ const connectStdio = async (
 };
 
 const main = async (): Promise<void> => {
+  if (process.argv[2] === 'record-goldens') {
+    process.exitCode = await runGoldensCli(process.argv.slice(3));
+    return;
+  }
   if (process.argv[2] === 'export-data') {
     process.exitCode = await runExportCli(process.argv.slice(3));
     return;

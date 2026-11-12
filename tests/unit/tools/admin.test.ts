@@ -55,7 +55,7 @@ afterEach(async () => {
 describe('admin tools', () => {
   it('registers the export: Zendesk-read-only, but honest that it writes local files', () => {
     const tools = createAdminTools(exportCtx());
-    expect(tools).toHaveLength(2);
+    expect(tools).toHaveLength(3);
     expect(tools[0]).toMatchObject({
       name: 'export_account_config',
       namespace: 'admin',

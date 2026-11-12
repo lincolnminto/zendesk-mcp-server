@@ -385,3 +385,63 @@ without invoking a tool. Stopping the server interrupts the export; restart and
 supply the returned folder name as `resume`. The tool remains available on
 `--read-only` servers because it only reads Zendesk, though its local file writes
 are reflected by `readOnlyHint: false`.
+
+### Golden observations (`record-goldens`)
+
+After `export-data`, record how Zendesk behaves against that data snapshot for
+characterization tests of a replacement system:
+
+```bash
+zendesk-mcp-server record-goldens acme --export-dir /absolute/local/backups \
+  --data-snapshot acme-data-2026-01-01T00-00-00-000Z
+zendesk-mcp-server record-goldens acme --export-dir /absolute/local/backups \
+  --data-snapshot acme-data-2026-01-01T00-00-00-000Z \
+  --only views --only macros --view-row-cap 2000 --macro-sample 25
+```
+
+The input folder stays inside `--export-dir`. Tickets are read line by line;
+when an ID repeats, its last version determines sampling and search statistics.
+Deleted tickets are excluded. Samples round-robin across deterministic strata
+ordered by size and key, with descending ticket IDs inside each stratum.
+
+The new `<subdomain>-goldens-<UTC timestamp>` folder contains:
+
+| Stage | Observations |
+| ----- | ------------ |
+| `context` | `context.json`: the complete `/users/me` response, all group memberships and recording time. Views using current-user conditions depend on this identity. |
+| `views` | Active shared views (unrestricted or Group restriction), live definitions, raw counts, every ordered ticket ID and execute columns/groups/rows in `views/<id>.json`; `views/index.json` records statuses and counts. |
+| `macros` | Active macros, generic apply responses and ticket-specific previews in `macros/<id>.json`; `macros/index.json` and `macros/sample.json` describe outcomes and sampled ticket strata. Apply endpoints preview changes without modifying tickets. |
+| `slas` | `slas.ndjson` contains ticket fields, SLAs and matched metric sideloads from batches of up to 100 tickets. `audits.ndjson` contains all audit pages per sampled ticket; `slas/sample.json` records strata. Unrecognized metric-event sideload shapes are preserved raw. |
+| `search` | `search.json` records counts and ordered first-page IDs by relevance and descending creation date, with query origins and recording times. Generated searches use non-deleted latest tickets, names/emails from the snapshot, top subject terms and dates relative to the data snapshot's start time. |
+
+`--only` repeats to select stages; the default runs the stages above in order.
+`--view-row-cap` defaults to 2000 (execute rows only; ticket IDs are uncapped).
+`--macro-sample` defaults to 25, stratified by status, form and brand.
+`--sla-sample` defaults to 500: 90% non-closed and 10% closed, stratified by status,
+priority, group and form. The closed allocation is rounded down; unavailable
+strata produce a smaller sample. Caps and sample sizes accept nonnegative integers.
+
+`--queries /absolute/path/queries.json` replaces generated searches with a JSON
+array of unique `{ "id": "open", "query": "type:ticket status:open" }` entries.
+Each query must begin with `type:ticket `. Query text contains names/emails and
+is written only to observation files, never info-level progress logs.
+
+Authentication, sign-in polling, `--rate`, `--log-level`, stderr progress, stdout
+JSON summary and exit codes follow `export-data`. Only GET requests are used.
+Each view, macro and page checkpoints the atomic manifest. Errors on individual
+views/previews/queries are recorded and other observations continue. A 403/404
+skips an inaccessible stage with a reason; other stage failures are resumable.
+A 401 aborts only if `/users/me` also rejects the token.
+
+Resume with `--resume <golden-folder-name>` and the same `--data-snapshot` and
+recording user. Completed stages and written view/macro files are skipped;
+unfinished SLA/audit output truncates to its committed offsets. Supplied sample
+options must match the original manifest. Folder names cannot contain separators
+or `..`; snapshot directories and input files must not be symlinks.
+
+The opt-in admin tool `record_goldens` accepts required `data_snapshot`, optional
+`stages` and `resume`. It shares the background-job reservation with `export_data`
+for the same account/export directory, returns immediately and reports the
+running job on repeated calls. Server shutdown interrupts it; resume after restart.
+It remains available with `--read-only`, with `readOnlyHint: false` for its local
+writes. Use the CLI for custom sample sizes or query files.

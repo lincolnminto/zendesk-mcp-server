@@ -53,25 +53,14 @@ export const createDataExportTool = (ctx: ToolContext, exportDir: string): ToolD
     openWorldHint: true,
   },
   handler: async (params) => {
-    const key = `${ctx.subdomain}:${resolve(exportDir)}`;
-    let pending = jobs.get(key);
-    if (!pending) {
-      pending = startJob(
-        {
-          ...(params as Pick<DataExportOptions, 'since' | 'streams' | 'resume'>),
-          subdomain: ctx.subdomain,
-          getToken: ctx.getToken,
-          exportDir,
-        },
-        key,
-      );
-      jobs.set(key, pending);
-      // Preparation failures must release the reservation too.
-      void pending.catch(() => {
-        if (jobs.get(key) === pending) jobs.delete(key);
-      });
-    }
-    const job = await pending;
+    const job = await backgroundJob(ctx, exportDir, () =>
+      prepareDataExport({
+        ...(params as Pick<DataExportOptions, 'since' | 'streams' | 'resume'>),
+        subdomain: ctx.subdomain,
+        getToken: ctx.getToken,
+        exportDir,
+      }),
+    );
     const manifest = await readManifest(job.snapshot);
     return {
       content: [
@@ -88,10 +77,30 @@ export const createDataExportTool = (ctx: ToolContext, exportDir: string): ToolD
   },
 });
 
-const startJob = async (options: DataExportOptions, key: string): Promise<Job> => {
-  const prepared = await prepareDataExport(options);
+interface PreparedJob {
+  snapshot: string;
+  run: () => Promise<unknown>;
+}
+export const backgroundJob = async (
+  ctx: ToolContext,
+  exportDir: string,
+  prepare: () => Promise<PreparedJob>,
+): Promise<Job> => {
+  const key = `${ctx.subdomain}:${resolve(exportDir)}`;
+  let pending = jobs.get(key);
+  if (!pending) {
+    pending = startJob(prepare, key);
+    jobs.set(key, pending);
+    const reserved = pending;
+    void pending.catch(() => {
+      if (jobs.get(key) === reserved) jobs.delete(key);
+    });
+  }
+  return pending;
+};
+const startJob = async (prepare: () => Promise<PreparedJob>, key: string): Promise<Job> => {
+  const prepared = await prepare();
   const job: Job = { snapshot: prepared.snapshot, running: true };
-  // Queue after preparation; callers get a reserved snapshot and durable manifest.
   void prepared
     .run()
     .catch((err: unknown) => {

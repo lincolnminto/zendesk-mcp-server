@@ -5,21 +5,29 @@ import { createTokenStore, isAuthRequiredError } from '../auth/token-store';
 import { LogLevel, loadConfig } from '../config';
 import { createLogger } from '../utils/logger';
 import { DATA_STREAMS, type DataStream, parseSince, runDataExport } from './data-export';
+import { GOLDEN_STAGES, type GoldenStage, runGoldens } from './goldens';
 import { validateResumeName } from './ndjson';
 import { defaultDeps, type ExportDeps, resolveRates } from './rate-limit';
 
 const USAGE =
   'Usage: zendesk-mcp-server export-data <subdomain> --export-dir <absolute-local-path> [--since <ISO|epoch>] [--only <stream>]... [--resume <folder>] [--rate <requests/min>] [--log-level <debug|info|warn|error>]';
+const GOLDENS_USAGE =
+  'Usage: zendesk-mcp-server record-goldens <subdomain> --export-dir <absolute-local-path> --data-snapshot <folder-name> [--only <stage>]... [--view-row-cap <rows>] [--macro-sample <tickets>] [--sla-sample <tickets>] [--queries <absolute-json-path>] [--resume <folder>] [--rate <requests/min>] [--log-level <debug|info|warn|error>]';
 const SUBDOMAIN = /^[a-z0-9][a-z0-9-]*$/i;
 const NETWORK_PATH = /^[\\/]{2}/;
-const parseStrictOptions = (args: string[]) => {
+const parseStrictOptions = (args: string[], goldens = false) => {
   try {
-    return parseArgs({
+    const parsed = parseArgs({
       args,
       strict: true,
       allowPositionals: true,
       options: {
         'export-dir': { type: 'string' },
+        'data-snapshot': { type: 'string' },
+        'view-row-cap': { type: 'string' },
+        'macro-sample': { type: 'string' },
+        'sla-sample': { type: 'string' },
+        queries: { type: 'string' },
         since: { type: 'string' },
         only: { type: 'string', multiple: true },
         resume: { type: 'string' },
@@ -27,8 +35,16 @@ const parseStrictOptions = (args: string[]) => {
         'log-level': { type: 'string' },
       },
     });
+    const goldenFlags = ['data-snapshot', 'view-row-cap', 'macro-sample', 'sla-sample', 'queries'];
+    if (
+      Object.keys(parsed.values).some((key) =>
+        goldens ? key === 'since' : goldenFlags.includes(key),
+      )
+    )
+      throw new Error('Unsupported flag');
+    return parsed;
   } catch (err) {
-    throw new Error(USAGE, { cause: err });
+    throw new Error(goldens ? GOLDENS_USAGE : USAGE, { cause: err });
   }
 };
 
@@ -63,6 +79,51 @@ export const parseExportArgs = (args: string[]) => {
   };
 };
 
+export const parseGoldensArgs = (args: string[]) => {
+  const { values, positionals } = parseStrictOptions(args, true);
+  const shared = parseExportArgs([
+    ...positionals,
+    '--export-dir',
+    values['export-dir'] ?? '',
+    '--rate',
+    values.rate ?? '300',
+    '--log-level',
+    values['log-level'] ?? 'info',
+    ...(values.resume !== undefined ? ['--resume', values.resume] : []),
+  ]);
+  if (!values['data-snapshot'])
+    throw new Error('record-goldens requires --data-snapshot <folder name>');
+  validateResumeName(values['data-snapshot']);
+  if (values.only?.some((name) => !GOLDEN_STAGES.includes(name as GoldenStage)))
+    throw new Error('Unknown golden stage');
+  const numberFlag = (value: string) => {
+    const parsed = Number(value);
+    if (!value.trim() || !Number.isSafeInteger(parsed) || parsed < 0)
+      throw new Error('Sample sizes and row caps must be nonnegative integers');
+    return parsed;
+  };
+  const queries = values.queries;
+  if (queries !== undefined && (!isAbsolute(queries) || NETWORK_PATH.test(queries)))
+    throw new Error('Queries must be an absolute local JSON file');
+  return {
+    ...shared,
+    dataSnapshot: values['data-snapshot'],
+    ...(values.only ? { stages: values.only as GoldenStage[] } : {}),
+    options: {
+      ...(values['view-row-cap'] !== undefined
+        ? { viewRowCap: numberFlag(values['view-row-cap']) }
+        : {}),
+      ...(values['macro-sample'] !== undefined
+        ? { macroSample: numberFlag(values['macro-sample']) }
+        : {}),
+      ...(values['sla-sample'] !== undefined
+        ? { slaSample: numberFlag(values['sla-sample']) }
+        : {}),
+      ...(queries !== undefined ? { queries } : {}),
+    },
+  };
+};
+
 export const waitForExportToken = async (
   getToken: () => string | Promise<string>,
   stderr: (message: string) => void,
@@ -86,9 +147,10 @@ export const waitForExportToken = async (
   }
 };
 
-export const runExportCli = async (args: string[]): Promise<number> => {
+const runCli = async (args: string[], goldens: boolean): Promise<number> => {
   // Complete pure argument validation before creating auth state or doing I/O.
-  const options = parseExportArgs(args);
+  const goldenOptions = goldens ? parseGoldensArgs(args) : undefined;
+  const options = goldenOptions ?? parseExportArgs(args);
   const config = loadConfig([
     options.subdomain,
     '--export-dir',
@@ -115,9 +177,34 @@ export const runExportCli = async (args: string[]): Promise<number> => {
           logger,
         );
   try {
+    const auth = {
+      getToken: () => waitForExportToken(tokenSource.getToken, (line) => console.error(line)),
+    };
+    if (goldenOptions) {
+      const result = await runGoldens({
+        ...goldenOptions,
+        ...auth,
+        onProgress: (manifest) => {
+          const progress = Object.entries(manifest.stages)
+            .map(([name, state]) => `${name}: ${state.status}, ${state.items} items`)
+            .join('; ');
+          logger.info('goldens_progress', { progress });
+        },
+      });
+      console.log(
+        JSON.stringify({
+          snapshot: result.snapshot,
+          stages: result.manifest.stages,
+          duration_ms: result.duration_ms,
+        }),
+      );
+      return Object.values(result.manifest.stages).some((stage) => stage.status === 'failed')
+        ? 1
+        : 0;
+    }
     const result = await runDataExport({
       ...options,
-      getToken: () => waitForExportToken(tokenSource.getToken, (line) => console.error(line)),
+      ...auth,
       onProgress: (manifest) => {
         const progress = Object.entries(manifest.streams)
           .map(([name, state]) => `${name}: ${state.status}, ${state.pages} pages`)
@@ -139,3 +226,6 @@ export const runExportCli = async (args: string[]): Promise<number> => {
     tokenSource.dispose();
   }
 };
+
+export const runExportCli = (args: string[]) => runCli(args, false);
+export const runGoldensCli = (args: string[]) => runCli(args, true);

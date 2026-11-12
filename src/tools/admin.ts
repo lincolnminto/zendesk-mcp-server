@@ -8,6 +8,7 @@ import {
   runConfigExport,
   snapshotDirName,
 } from '../export/account-config';
+import { createGoldensTool } from '../export/goldens-tool';
 import { createDataExportTool } from '../export/tool';
 import type { ToolContext, ToolDefinition } from './definitions';
 
@@ -18,7 +19,11 @@ import type { ToolContext, ToolDefinition } from './definitions';
  */
 export const createAdminTools = (ctx: ToolContext): ToolDefinition[] =>
   ctx.exportDir
-    ? [exportAccountConfig(ctx, ctx.exportDir), createDataExportTool(ctx, ctx.exportDir)]
+    ? [
+        exportAccountConfig(ctx, ctx.exportDir),
+        createDataExportTool(ctx, ctx.exportDir),
+        createGoldensTool(ctx, ctx.exportDir),
+      ]
     : [];
 
 const exportAccountConfig = (ctx: ToolContext, exportDir: string): ToolDefinition => ({
