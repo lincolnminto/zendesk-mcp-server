@@ -313,3 +313,75 @@ Hard cap on the number of article pages scanned to find promoted ("featured") ar
 ---
 
 ← Back to the [README](../README.md).
+
+## Bulk data export (`export-data`)
+
+Use the standalone subcommand for long account snapshots without starting an MCP
+server:
+
+```bash
+zendesk-mcp-server export-data acme --export-dir /absolute/local/backups
+zendesk-mcp-server export-data acme --export-dir /absolute/local/backups \
+  --since 2025-01-01T00:00:00Z --only tickets --only ticket_events --rate 200
+zendesk-mcp-server export-data acme --export-dir /absolute/local/backups \
+  --resume acme-data-2026-01-01T00-00-00-000Z
+```
+
+An admin sign-in is required. Authentication uses the same API-token environment
+pair as stdio, or OAuth with **read scope only**. If OAuth needs authorization,
+the CLI prints the authorization URL to stderr and polls every three seconds for
+up to ten minutes. Progress goes to stderr; stdout receives a final JSON summary
+with the snapshot path, per-stream file line/byte counts, status and duration.
+Exit code is 1 if a stream failed, otherwise 0 (unavailable streams are skipped).
+Unknown flags and invalid arguments fail before authentication or network access.
+
+| Flag | Meaning |
+| ---- | ------- |
+| `--export-dir <absolute-local-path>` | Required destination parent directory; snapshots use a new `<subdomain>-data-<UTC timestamp>` folder and never overwrite an earlier snapshot. Network paths and symlink directories are refused. |
+| `--since <ISO-date-or-epoch-seconds>` | Incremental start time, default 0 (all available history). List streams and configuration always export in full. |
+| `--only <stream>` | Repeat to select streams; omit for all streams below. |
+| `--resume <snapshot-folder-name>` | Resume inside the same export directory. Folder names cannot contain separators or `..`. The original start time is preserved; any supplied `--since` must match. Only originally selected streams can be resumed. |
+| `--rate <requests-per-minute>` | Standard request bucket, default 300. All incremental endpoints share a separate bucket of 10 requests/minute. |
+| `--log-level <debug\|info\|warn\|error>` | Stderr progress verbosity, default `info`. Authorization URLs remain visible at every level. |
+
+Streams run sequentially in this order:
+
+| Stream | Files |
+| ------ | ----- |
+| `tickets` | `tickets.ndjson` (including deleted tickets), `ticket_metrics.ndjson`; `ticket_slas.ndjson` only when returned by the sideload. Ticket includes fall back from `metric_sets,dates,slas` to `metric_sets`, then no include on HTTP 400. |
+| `users` | `users.ndjson`; `user_identities.ndjson` when sideloaded. Falls back without identities on HTTP 400. |
+| `organizations` | `organizations.ndjson` |
+| `ticket_events` | `ticket_events.ndjson`, derived `comments.ndjson` and `attachments.ndjson`. Attachments contain metadata only; content URLs are never downloaded. Boundary event IDs are deduplicated across adjacent pages, including after resume. |
+| `ticket_metric_events` | `ticket_metric_events.ndjson` |
+| `groups` | `groups.ndjson` |
+| `group_memberships` | `group_memberships.ndjson` |
+| `organization_memberships` | `organization_memberships.ndjson` |
+| `satisfaction_ratings` | `satisfaction_ratings.ndjson` |
+| `config` | Existing account-configuration JSON export under `config/`, with its own resource manifest. |
+
+These snapshots reflect what Zendesk makes available during the run; account
+changes during a long export are not an atomic database backup. NDJSON stores
+one raw object per line, plus derived comment and attachment metadata. The top-level
+`manifest.json` records the current user, effective includes, rates, per-stream
+status, requests, pages, file byte/line counts, next position and timings. It is
+replaced atomically after each page. Resume truncates unfinished NDJSON files to
+the recorded byte offsets before continuing, removing partial/uncommitted pages.
+Configuration progress is saved per resource. Completed and skipped streams are
+left intact; failed streams are retried. A 403/404 skips a stream with a reason;
+other failures are recorded and the remaining streams continue. A 401 aborts only
+when `/users/me` also rejects the token.
+
+After the client's own retry policy is exhausted, the exporter waits 60 seconds
+on HTTP 429 and retries up to ten times; server/network failures wait 30 seconds
+and retry up to five times. Pacing applies between attempts. Pagination links
+are followed only inside the account API. Only GET requests are issued.
+
+The opt-in admin tool `export_data` provides the same snapshot export on a stdio
+server configured with `--export-dir`. It accepts `since`, `streams` and `resume`,
+returns immediately after reserving the snapshot, and runs in the server process.
+While an export is running, subsequent calls return that job's manifest progress
+instead of creating another job. Read `<snapshot>/manifest.json` for progress
+without invoking a tool. Stopping the server interrupts the export; restart and
+supply the returned folder name as `resume`. The tool remains available on
+`--read-only` servers because it only reads Zendesk, though its local file writes
+are reflected by `readOnlyHint: false`.

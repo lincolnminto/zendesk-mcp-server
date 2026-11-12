@@ -101,6 +101,7 @@ out every `write` tool before the proxies are built.
 | Tool | Description | Mode |
 |------|-------------|------|
 | `export_account_config` | Export the account's admin configuration (business rules, forms, fields, statuses, SLAs, schedules with their holidays, groups, roles, brands, webhooks, routing attributes with their values, custom objects with their fields, settings and more) as raw Zendesk JSON, one file per resource, into a new timestamped local folder, plus a `manifest.json`; a resource the account cannot read (403) or that is not available on it (404) is skipped, not fatal. Reads only from Zendesk, so `--read-only` keeps it; it writes local files (`readOnlyHint: false`) but never overwrites a previous export. Opt-in: registered only when the server has an export directory ([`--export-dir`](configuration.md#zendesk_export_dir), stdio only); needs an admin sign-in | read |
+| `export_data` | Start a resumable bulk data snapshot (tickets, users, organizations, events, memberships, ratings and configuration) in the background; returns the local folder and manifest progress immediately. Calls while running report the same job. Supports `since`, selected `streams` and `resume`; attachment metadata only. Reads only Zendesk, writes local NDJSON with atomic checkpoints, and is retained on `--read-only` servers (`readOnlyHint: false`). Opt-in with `--export-dir`, stdio only; needs an admin sign-in. See [bulk export](configuration.md#bulk-data-export-export-data) | read |
 
 </details>
 

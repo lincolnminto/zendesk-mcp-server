@@ -5,12 +5,12 @@ import { HttpResponse, http } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CONFIG_RESOURCES,
-  createAdminTools,
   extractItems,
   MAX_PAGES,
   nextRequest,
   snapshotDirName,
-} from '../../../src/tools/admin';
+} from '../../../src/export/account-config';
+import { createAdminTools } from '../../../src/tools/admin';
 import type { ToolContext } from '../../../src/tools/definitions';
 import { mswServer } from '../../setup';
 
@@ -55,7 +55,7 @@ afterEach(async () => {
 describe('admin tools', () => {
   it('registers the export: Zendesk-read-only, but honest that it writes local files', () => {
     const tools = createAdminTools(exportCtx());
-    expect(tools).toHaveLength(1);
+    expect(tools).toHaveLength(2);
     expect(tools[0]).toMatchObject({
       name: 'export_account_config',
       namespace: 'admin',

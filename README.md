@@ -43,6 +43,8 @@ then calls the right tools on your behalf.
   conversation (opt-in: start the server with an
   [export directory](docs/configuration.md#zendesk_export_dir)).
 
+For resumable bulk account snapshots, see [the `export-data` subcommand](docs/configuration.md#bulk-data-export-export-data).
+
 ## Why this server
 
 Most Zendesk integrations run on a shared admin API key, which hands every user
