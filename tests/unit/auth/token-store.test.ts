@@ -75,7 +75,9 @@ describe('createTokenStore', () => {
     loadTokenMock.mockReset();
     loadTokenMock.mockReturnValue(undefined);
     saveTokenMock.mockReset();
+    saveTokenMock.mockImplementation((_path, record) => loadTokenMock.mockReturnValue(record));
     clearTokenMock.mockReset();
+    clearTokenMock.mockImplementation(() => loadTokenMock.mockReturnValue(undefined));
     resolveTokenPathMock.mockClear();
   });
 
@@ -213,7 +215,182 @@ describe('createTokenStore', () => {
     expect(startBrowserAuthMock).not.toHaveBeenCalled();
   });
 
-  it('falls back to the browser flow when the refresh token is rejected', async () => {
+  it.each(['valid', 'expired', 'unknown'] as const)(
+    'adopts a %s token rotated on disk before refreshing',
+    async (expiry) => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'old',
+        refreshToken: 'r1',
+        expiresAt: 0,
+        scope: 'read',
+      });
+      const sharedStore = createTokenStore({ ...CONFIG, readOnly: true });
+      loadTokenMock.mockReturnValue({
+        accessToken: 'other-process',
+        refreshToken: 'r2',
+        scope: 'read',
+        expiresAt: { unknown: undefined, valid: Date.now() + 3600_000, expired: 0 }[expiry],
+      });
+      refreshAccessTokenMock.mockResolvedValue({ access_token: 'refreshed', refresh_token: 'r3' });
+
+      await expect(sharedStore.getToken()).resolves.toBe(
+        expiry === 'valid' ? 'other-process' : 'refreshed',
+      );
+      expect(refreshAccessTokenMock).toHaveBeenCalledTimes(expiry === 'valid' ? 0 : 1);
+      if (expiry !== 'valid') {
+        expect(refreshAccessTokenMock).toHaveBeenCalledWith(
+          expect.objectContaining({ refreshToken: 'r2' }),
+        );
+      }
+      expect(clearTokenMock).not.toHaveBeenCalled();
+      expect(startBrowserAuthMock).not.toHaveBeenCalled();
+      sharedStore.dispose();
+    },
+  );
+
+  it.each(['valid', 'expired', 'unknown'] as const)(
+    'adopts a %s token rotated on disk during a failed refresh without clearing it',
+    async (expiry) => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'old',
+        refreshToken: 'r1',
+        expiresAt: 0,
+        scope: 'read',
+      });
+      const store = createTokenStore({ ...CONFIG, readOnly: true });
+      refreshAccessTokenMock
+        .mockImplementationOnce(async () => {
+          loadTokenMock.mockReturnValue({
+            accessToken: 'other-process',
+            refreshToken: 'r2',
+            scope: 'read',
+            expiresAt: { unknown: undefined, valid: Date.now() + 3600_000, expired: 0 }[expiry],
+          });
+          throw new Error('invalid_grant');
+        })
+        .mockResolvedValueOnce({ access_token: 'refreshed', refresh_token: 'r3' });
+
+      await expect(store.getToken()).resolves.toBe(
+        expiry === 'valid' ? 'other-process' : 'refreshed',
+      );
+      expect(refreshAccessTokenMock).toHaveBeenCalledTimes(expiry === 'valid' ? 1 : 2);
+      if (expiry !== 'valid') {
+        expect(refreshAccessTokenMock).toHaveBeenLastCalledWith(
+          expect.objectContaining({ refreshToken: 'r2' }),
+        );
+      }
+      expect(clearTokenMock).not.toHaveBeenCalled();
+      expect(startBrowserAuthMock).not.toHaveBeenCalled();
+      store.dispose();
+    },
+  );
+
+  it.each([undefined, { accessToken: 'no-refresh' }])(
+    'refreshes the cached grant when disk has no refresh token: %s',
+    async (disk) => {
+      loadTokenMock.mockReturnValue({ accessToken: 'old', refreshToken: 'r1', expiresAt: 0 });
+      const store = createTokenStore(CONFIG);
+      loadTokenMock.mockReturnValue(disk);
+      refreshAccessTokenMock.mockResolvedValue({ access_token: 'new' });
+
+      await expect(store.getToken()).resolves.toBe('new');
+      expect(refreshAccessTokenMock).toHaveBeenCalledWith(
+        expect.objectContaining({ refreshToken: 'r1' }),
+      );
+      store.dispose();
+    },
+  );
+
+  it('bounds recovery after rotation to one extra attempt and preserves the other process record', async () => {
+    loadTokenMock.mockReturnValue({ accessToken: 'old', refreshToken: 'r1', expiresAt: 0 });
+    const store = createTokenStore(CONFIG);
+    refreshAccessTokenMock.mockImplementation(async ({ refreshToken }) => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'expired',
+        refreshToken: refreshToken === 'r1' ? 'r2' : 'r3',
+        expiresAt: 0,
+      });
+      throw new Error('invalid_grant');
+    });
+    startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+
+    await expect(store.getToken()).rejects.toThrow('authentication required');
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(2);
+    expect(clearTokenMock).not.toHaveBeenCalled();
+    store.dispose();
+  });
+
+  it('preserves the rotated disk record when its recovery refresh also fails', async () => {
+    loadTokenMock.mockReturnValue({ accessToken: 'old', refreshToken: 'r1', expiresAt: 0 });
+    const store = createTokenStore(CONFIG);
+    refreshAccessTokenMock
+      .mockImplementationOnce(async () => {
+        loadTokenMock.mockReturnValue({ accessToken: 'expired', refreshToken: 'r2', expiresAt: 0 });
+        throw new Error('invalid_grant');
+      })
+      .mockRejectedValueOnce(new Error('503'));
+    startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+
+    await expect(store.getToken()).rejects.toThrow('authentication required');
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(2);
+    expect(clearTokenMock).not.toHaveBeenCalled();
+    store.dispose();
+  });
+
+  it('probes an adopted unknown-expiry record even after probing an earlier grant', async () => {
+    loadTokenMock.mockReturnValue({ accessToken: 'old', refreshToken: 'r1' });
+    refreshAccessTokenMock.mockResolvedValueOnce({ access_token: 'first', refresh_token: 'r2' });
+    const store = createTokenStore(CONFIG);
+    await expect(store.getToken()).resolves.toBe('first');
+    store.invalidate();
+    loadTokenMock.mockReturnValue({ accessToken: 'other-process', refreshToken: 'r3' });
+    refreshAccessTokenMock.mockResolvedValueOnce({ access_token: 'second', refresh_token: 'r4' });
+
+    await expect(store.getToken()).resolves.toBe('second');
+    expect(refreshAccessTokenMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ refreshToken: 'r3' }),
+    );
+    store.dispose();
+  });
+
+  it.each([false, true])(
+    'rejects a broader disk scope during refresh (after failure: %s)',
+    async (afterFailure) => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'old',
+        refreshToken: 'r1',
+        expiresAt: 0,
+        scope: 'read',
+      });
+      const store = createTokenStore({ ...CONFIG, readOnly: true });
+      const broad = {
+        accessToken: 'broad',
+        refreshToken: 'r2',
+        expiresAt: Date.now() + 3600_000,
+        scope: 'read write',
+      };
+      if (afterFailure) {
+        refreshAccessTokenMock.mockImplementationOnce(async () => {
+          loadTokenMock.mockReturnValue(broad);
+          throw new Error('invalid_grant');
+        });
+        startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
+        await expect(store.getToken()).rejects.toThrow('authentication required');
+        expect(clearTokenMock).toHaveBeenCalledTimes(1);
+      } else {
+        loadTokenMock.mockReturnValue(broad);
+        refreshAccessTokenMock.mockResolvedValue({ access_token: 'safe', scope: 'read' });
+        await expect(store.getToken()).resolves.toBe('safe');
+      }
+      expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+      expect(refreshAccessTokenMock).toHaveBeenCalledWith(
+        expect.objectContaining({ refreshToken: 'r1' }),
+      );
+      store.dispose();
+    },
+  );
+
+  it('falls back to the browser flow when the same on-disk refresh token is rejected', async () => {
     loadTokenMock.mockReturnValue({
       accessToken: 'old',
       refreshToken: 'bad',
@@ -369,6 +546,44 @@ describe('createTokenStore', () => {
       );
       store.dispose();
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([false, true])('keepalive adopts a newer disk record (expired: %s)', async (expired) => {
+    vi.useFakeTimers();
+    const store = (() => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'old',
+        refreshToken: 'r1',
+        expiresAt: Date.now() + 12 * 3600_000,
+      });
+      return createTokenStore(CONFIG);
+    })();
+    try {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'other-process',
+        refreshToken: 'r2',
+        expiresAt: expired ? 0 : Date.now() + 12 * 3600_000,
+      });
+      refreshAccessTokenMock.mockResolvedValue({
+        access_token: 'refreshed',
+        refresh_token: 'r3',
+        expires_in: 3600,
+      });
+
+      await vi.advanceTimersByTimeAsync(4 * 3600_000);
+
+      await expect(store.getToken()).resolves.toBe(expired ? 'refreshed' : 'other-process');
+      expect(refreshAccessTokenMock).toHaveBeenCalledTimes(expired ? 1 : 0);
+      if (expired) {
+        expect(refreshAccessTokenMock).toHaveBeenCalledWith(
+          expect.objectContaining({ refreshToken: 'r2' }),
+        );
+      }
+      expect(clearTokenMock).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
       vi.useRealTimers();
     }
   });
