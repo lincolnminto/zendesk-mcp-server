@@ -272,10 +272,20 @@ Dois subcomandos de linha de comando, só com GET no Zendesk e o token de escopo
 
 - `zendesk-mcp-server export-data <subdominio> --export-dir <pasta-absoluta>`
   grava um snapshot completo da conta (tickets, usuários, organizações, grupos,
-  vínculos, eventos com comentários, metadados de anexos, métricas, avaliações e
-  configuração) em NDJSON, numa pasta datada com `manifest.json`. Respeita os
+  vínculos, eventos com comentários, metadados de anexos, métricas, avaliações,
+  registros de objetos personalizados, conversas paralelas e configuração) em
+  NDJSON, numa pasta datada com `manifest.json`. Respeita os
   limites de requisição e retoma de onde parou com `--resume <pasta>`; `--since`
-  traz só o delta.
+  traz o delta dos streams incrementais. Tickets e eventos de ticket enviam
+  `support_type_scope=all` em todas as páginas, incluindo tickets de agentes de IA.
+  O stream `custom_object_records` grava `custom_object_records.ndjson` com
+  `custom_object_key` e exporta todos os registros a cada execução, mesmo com
+  `--since`. O stream `side_conversation_events` grava eventos incrementais em
+  `side_conversation_events.ndjson` e as conversas referenciadas em
+  `side_conversations.ndjson`, com `ticket_id` e sem duplicá-las no snapshot.
+  Ambos ficam ligados por padrão e podem ser selecionados com `--only <stream>`;
+  contas sem acesso ao add-on de conversas paralelas registram o stream como
+  indisponível (`skipped`) no manifest e seguem com o export.
 - `zendesk-mcp-server record-goldens <subdominio> --export-dir <pasta-absoluta> --data-snapshot <pasta-do-export>`
   grava o comportamento do Zendesk sobre esse snapshot: visualizações
   compartilhadas ativas (contagem, ids em ordem, linhas), prévias de macros,

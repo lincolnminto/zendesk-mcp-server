@@ -24,6 +24,7 @@ interface NestedListSpec {
 interface ConfigResourceSpec {
   readonly path: string;
   readonly responseKey: string;
+  readonly params?: Readonly<Record<string, string>>;
   readonly single?: true;
   readonly nested?: NestedListSpec;
 }
@@ -93,7 +94,11 @@ export const CONFIG_RESOURCES: Readonly<Record<ConfigResourceKey, ConfigResource
   triggers: { path: '/triggers', responseKey: 'triggers' },
   trigger_categories: { path: '/trigger_categories', responseKey: 'trigger_categories' },
   automations: { path: '/automations', responseKey: 'automations' },
-  macros: { path: '/macros', responseKey: 'macros' },
+  macros: {
+    path: '/macros',
+    responseKey: 'macros',
+    params: { include: 'usage_7d,usage_30d' },
+  },
   views: { path: '/views', responseKey: 'views' },
   sla_policies: { path: '/slas/policies', responseKey: 'sla_policies' },
   group_sla_policies: { path: '/group_slas/policies', responseKey: 'group_sla_policies' },
@@ -218,12 +223,13 @@ export const firstPage = async (
   token: string,
   path: string,
   request: typeof zendeskGet = zendeskGet,
+  params: Readonly<Record<string, string>> = {},
 ): Promise<Body> => {
   try {
-    return await request<Body>(subdomain, token, path, { ...CURSOR_FIRST_PAGE });
+    return await request<Body>(subdomain, token, path, { ...CURSOR_FIRST_PAGE, ...params });
   } catch (err) {
     if (!(err instanceof ZendeskApiError && err.status === 400)) throw err;
-    return request<Body>(subdomain, token, path);
+    return request<Body>(subdomain, token, path, params);
   }
 };
 
@@ -238,15 +244,16 @@ const fetchList = async (
   path: string,
   responseKey: string,
   request: typeof zendeskGet = zendeskGet,
+  params: Readonly<Record<string, string>> = {},
 ): Promise<FetchedList> => {
   const items: unknown[] = [];
-  let body = await firstPage(subdomain, token, path, request);
+  let body = await firstPage(subdomain, token, path, request, params);
   for (let pages = 1; ; pages += 1) {
     items.push(...listOf(body, responseKey));
     const next = nextRequest(body, subdomain);
     if (next === undefined) return { items, truncated: false };
     if (pages >= MAX_PAGES) return { items, truncated: true };
-    body = await request<Body>(subdomain, token, next.path, next.params);
+    body = await request<Body>(subdomain, token, next.path, { ...next.params, ...params });
   }
 };
 
@@ -322,7 +329,7 @@ const fetchResource = async (
       nestedMissing: 0,
     };
   }
-  const list = await fetchList(subdomain, token, spec.path, spec.responseKey, request);
+  const list = await fetchList(subdomain, token, spec.path, spec.responseKey, request, spec.params);
   const result: NestedResult = spec.nested
     ? await attachNested(subdomain, token, list.items, spec.nested, request)
     : { items: list.items, truncated: false, missing: 0 };

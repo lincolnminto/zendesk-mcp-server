@@ -63,3 +63,69 @@ it('exports data through the read-only admin proxy and returns the running job o
     sleep.mockRestore();
   }
 });
+
+it('selects custom records and incremental side conversations through the admin proxy', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'additional-data-mcp-'));
+  let time = Date.parse('2026-01-01T00:00:00Z');
+  const now = vi.spyOn(defaultDeps, 'now').mockImplementation(() => time);
+  const sleep = vi.spyOn(defaultDeps, 'sleep').mockImplementation(async (ms) => {
+    time += ms;
+  });
+  const api = 'https://testsubdomain.zendesk.com/api/v2';
+  mswServer.use(
+    http.get(`${api}/custom_objects`, () =>
+      HttpResponse.json({ custom_objects: [{ key: 'devices' }], meta: { has_more: false } }),
+    ),
+    http.get(`${api}/custom_objects/devices/records`, () =>
+      HttpResponse.json({ custom_object_records: [{ id: 'r1' }], meta: { has_more: false } }),
+    ),
+    http.get(`${api}/tickets/side_conversations/events`, () =>
+      HttpResponse.json({
+        events: [{ id: 'e1', ticket_id: 8, side_conversation_id: 'sc1' }],
+        count: 1,
+        end_time: 5,
+      }),
+    ),
+    http.get(`${api}/tickets/8/side_conversations/sc1`, () =>
+      HttpResponse.json({ side_conversation: { id: 'sc1' } }),
+    ),
+  );
+  const connected = await stdioHarness.connect(
+    makeConfig({ mode: 'namespace', readOnly: true, exportDir: root }),
+  );
+  try {
+    const result = await connected.client.callTool({
+      name: 'zendesk_admin',
+      arguments: {
+        operation: 'export_data',
+        params: { since: '3', streams: ['custom_object_records', 'side_conversation_events'] },
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const initial = JSON.parse(String((result.content as Array<{ text: string }>)[0]?.text));
+    await vi.waitFor(
+      async () => {
+        const manifest = JSON.parse(
+          await readFile(join(initial.snapshot, 'manifest.json'), 'utf8'),
+        );
+        expect(manifest.finished_at).toBeDefined();
+        expect(manifest.streams.custom_object_records.status).toBe('exported');
+        expect(manifest.streams.side_conversation_events.status).toBe('exported');
+        expect(
+          manifest.streams.custom_object_records.files['custom_object_records.ndjson'].lines,
+        ).toBe(1);
+        expect(
+          manifest.streams.side_conversation_events.files['side_conversation_events.ndjson'].lines,
+        ).toBe(1);
+        expect(
+          manifest.streams.side_conversation_events.files['side_conversations.ndjson'].lines,
+        ).toBe(1);
+      },
+      { interval: 1 },
+    );
+  } finally {
+    await connected.close();
+    now.mockRestore();
+    sleep.mockRestore();
+  }
+});

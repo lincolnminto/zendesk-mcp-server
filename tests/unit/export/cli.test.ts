@@ -24,6 +24,20 @@ afterEach(() => {
 });
 
 describe('export CLI', () => {
+  it('accepts custom records and incremental side events as selectable streams', () => {
+    expect(
+      parseExportArgs([
+        'testsubdomain',
+        '--export-dir',
+        '/tmp/export',
+        '--only',
+        'custom_object_records',
+        '--only',
+        'side_conversation_events',
+      ]).streams,
+    ).toEqual(['custom_object_records', 'side_conversation_events']);
+  });
+
   it('validates since, resume, logging, subdomain and local directory', () => {
     const args = ['testsubdomain', '--export-dir', '/tmp/export'];
     expect(

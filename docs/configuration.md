@@ -211,6 +211,20 @@ available with `--read-only` (it only reads from Zendesk). In `single` mode,
 enabling it therefore makes the one `zendesk` proxy report `readOnlyHint: false`
 as well; prefer the default `namespace` mode, where only `zendesk_admin` does.
 
+Macro snapshots request `include=usage_7d,usage_30d` on every page, preserving
+the usage counters on each macro. Zendesk supports these sideloads on Support
+Professional or Suite Growth and above, with up to 100 macros per page.
+Cursor pagination remains the default: the restriction on usage-based sorting
+does not apply to requesting usage sideloads. See [List Macros](https://developer.zendesk.com/api-reference/ticketing/business-rules/macros/#list-macros)
+and [side-loading](https://developer.zendesk.com/documentation/api-basics/working-with-data/side_loading/).
+
+The same admin namespace includes `list_api_tokens`, a read-only inventory that
+follows all pages and returns metadata including `last_used` (null for a token
+never used). It filters out full and truncated token values and writes no files.
+Requires an admin or an agent with Manage APIs permission. The [official OpenAPI
+contract](https://developer.zendesk.com/zendesk/oas.yaml) documents the fields and
+marks the endpoint deprecated, with removal scheduled for April 30, 2027.
+
 ### `ZENDESK_EMAIL`
 **Required:** only to activate stdio API-token auth (paired with `ZENDESK_API_TOKEN`) · **Default:** none
 
@@ -348,15 +362,17 @@ Streams run sequentially in this order:
 
 | Stream | Files |
 | ------ | ----- |
-| `tickets` | `tickets.ndjson` (including deleted tickets), `ticket_metrics.ndjson`; `ticket_slas.ndjson` only when returned by the sideload. Ticket includes fall back from `metric_sets,dates,slas` to `metric_sets`, then no include on HTTP 400. |
+| `tickets` | `tickets.ndjson` (including deleted tickets and AI-agent tickets via `support_type_scope=all` on every request), `ticket_metrics.ndjson`; `ticket_slas.ndjson` only when returned by the sideload. Ticket includes fall back from `metric_sets,dates,slas` to `metric_sets`, then no include on HTTP 400. |
 | `users` | `users.ndjson`; `user_identities.ndjson` when sideloaded. Falls back without identities on HTTP 400. |
 | `organizations` | `organizations.ndjson` |
-| `ticket_events` | `ticket_events.ndjson`, derived `comments.ndjson` and `attachments.ndjson`. Attachments contain metadata only; content URLs are never downloaded. Boundary event IDs are deduplicated across adjacent pages, including after resume. |
+| `ticket_events` | `ticket_events.ndjson`, derived `comments.ndjson` and `attachments.ndjson`. Sends `support_type_scope=all` on every request. Attachments contain metadata only; content URLs are never downloaded. Boundary event IDs are deduplicated across adjacent pages, including after resume. |
 | `ticket_metric_events` | `ticket_metric_events.ndjson` |
+| `side_conversation_events` | Raw incremental events in `side_conversation_events.ndjson`, with boundary deduplication and resume. Referenced conversations are fetched once per `(ticket_id, side_conversation_id)` in the snapshot and written to `side_conversations.ndjson` with `ticket_id`. Enabled by default; 403/404 marks the stream unavailable (`skipped`) and continues. |
 | `groups` | `groups.ndjson` |
 | `group_memberships` | `group_memberships.ndjson` |
 | `organization_memberships` | `organization_memberships.ndjson` |
 | `satisfaction_ratings` | `satisfaction_ratings.ndjson` |
+| `custom_object_records` | `custom_object_records.ndjson`, with `custom_object_key` on every record. Lists objects and cursor-pages all their undeleted records with `page[size]=100`. Always exports in full, including with `--since`; resume continues the saved object and record cursor. |
 | `config` | Existing account-configuration JSON export under `config/`, with its own resource manifest. |
 
 These snapshots reflect what Zendesk makes available during the run; account

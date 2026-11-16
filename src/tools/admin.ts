@@ -1,9 +1,12 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as z from 'zod/v4';
+import { zendeskGet } from '../client/zendesk-api';
 import {
+  type ApiRequest,
   type ConfigResourceKey,
   formatSummary,
+  nextRequest,
   RESOURCE_KEYS,
   runConfigExport,
   snapshotDirName,
@@ -23,8 +26,69 @@ export const createAdminTools = (ctx: ToolContext): ToolDefinition[] =>
         exportAccountConfig(ctx, ctx.exportDir),
         createDataExportTool(ctx, ctx.exportDir),
         createGoldensTool(ctx, ctx.exportDir),
+        listApiTokens(ctx),
       ]
     : [];
+
+interface ApiTokenMetadata {
+  id: number;
+  description: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string | null;
+  last_used: string | null;
+}
+
+const listApiTokens = (ctx: ToolContext): ToolDefinition => ({
+  name: 'list_api_tokens',
+  namespace: 'admin',
+  readOnly: true,
+  title: 'List Zendesk API Tokens',
+  description:
+    'List all account API tokens with their metadata and last usage time, excluding token values. ' +
+    'Use it to audit active or unused API credentials; returns id, description, active, created_at, updated_at and last_used (null if never used), following every page. ' +
+    'Only reads Zendesk and writes no local files; never returns token or visible_token values. ' +
+    'Requires an admin or an agent with Manage APIs permission; available only when the server was started with an export directory. ' +
+    'The Zendesk endpoint is deprecated and scheduled for removal on April 30, 2027.',
+  inputSchema: z.object({}),
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  },
+  handler: async () => {
+    const token = await ctx.getToken();
+    const apiTokens: ApiTokenMetadata[] = [];
+    let next: ApiRequest | undefined = { path: '/api_tokens', params: {} };
+    while (next) {
+      const body = await zendeskGet<{ api_tokens: ApiTokenMetadata[]; next_page?: string | null }>(
+        ctx.subdomain,
+        token,
+        next.path,
+        next.params,
+      );
+      // Allowlist metadata: even a token value unexpectedly included by Zendesk
+      // must never reach the caller (including its truncated visible_token).
+      apiTokens.push(
+        ...body.api_tokens.map(
+          ({ id, description, active, created_at, updated_at, last_used }) => ({
+            id,
+            description,
+            active,
+            created_at,
+            updated_at,
+            last_used,
+          }),
+        ),
+      );
+      next = nextRequest(body, ctx.subdomain);
+    }
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ api_tokens: apiTokens }, null, 2) }],
+    };
+  },
+});
 
 const exportAccountConfig = (ctx: ToolContext, exportDir: string): ToolDefinition => ({
   name: 'export_account_config',

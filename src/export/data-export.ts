@@ -1,5 +1,7 @@
-import { mkdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, open } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 import { ZendeskApiError, type zendeskGet } from '../client/zendesk-api';
 import type { ToolContext } from '../tools/definitions';
 import {
@@ -36,10 +38,12 @@ export const DATA_STREAMS = [
   'organizations',
   'ticket_events',
   'ticket_metric_events',
+  'side_conversation_events',
   'groups',
   'group_memberships',
   'organization_memberships',
   'satisfaction_ratings',
+  'custom_object_records',
   'config',
 ] as const;
 export type DataStream = (typeof DATA_STREAMS)[number];
@@ -47,6 +51,7 @@ type Body = Record<string, unknown>;
 interface Position {
   request: ApiRequest | null;
   previous_ids: Array<string | number>;
+  custom_objects?: { keys: string[]; next_list: ApiRequest | null };
 }
 export interface StreamState {
   status: 'pending' | 'running' | 'exported' | 'skipped' | 'failed';
@@ -85,6 +90,7 @@ const EPOCH = /^\d+$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:T.*)?$/;
 const SUBDOMAIN = /^[a-z0-9][a-z0-9-]*$/i;
 const NETWORK_PATH = /^[\\/]{2}/;
+const JSON_SUFFIX = /\.json$/;
 export const parseSince = (value: string | number | undefined): number => {
   if (value === undefined) return 0;
   let seconds: number;
@@ -94,19 +100,25 @@ export const parseSince = (value: string | number | undefined): number => {
     throw new Error('Since must be an ISO date or non-negative epoch seconds');
   return seconds;
 };
-const incremental = (name: DataStream): boolean => DATA_STREAMS.indexOf(name) < 5;
+const incremental = (name: DataStream): boolean => DATA_STREAMS.indexOf(name) < 6;
 const timeBased = (name: DataStream): boolean =>
   incremental(name) && name !== 'tickets' && name !== 'users';
 const streamPath = (name: DataStream): string => {
+  if (name === 'side_conversation_events') return '/tickets/side_conversations/events';
+  if (name === 'custom_object_records') return '/custom_objects';
   if (name === 'tickets' || name === 'users') return `/incremental/${name}/cursor`;
   return incremental(name) ? `/incremental/${name}` : `/${name}`;
 };
+const supportScope = (name: DataStream): Record<string, string> =>
+  name === 'tickets' || name === 'ticket_events' ? { support_type_scope: 'all' } : {};
 const initialRequest = (name: DataStream, since: number): ApiRequest => ({
   path: streamPath(name),
   params: incremental(name)
-    ? { start_time: String(since), per_page: '1000' }
+    ? { start_time: String(since), ...incrementalPageSize(name), ...supportScope(name) }
     : { 'page[size]': '100' },
 });
+const incrementalPageSize = (name: DataStream): Record<string, string> =>
+  name === 'side_conversation_events' ? {} : { per_page: '1000' };
 const defaultInclude = (name: DataStream): string | undefined => {
   if (name === 'tickets') return 'metric_sets,dates,slas';
   if (name === 'users') return 'identities';
@@ -118,6 +130,7 @@ const streamFiles = (name: DataStream): string[] => {
   if (name === 'tickets') files.push('ticket_metrics.ndjson', 'ticket_slas.ndjson');
   if (name === 'users') files.push('user_identities.ndjson');
   if (name === 'ticket_events') files.push('comments.ndjson', 'attachments.ndjson');
+  if (name === 'side_conversation_events') files.push('side_conversations.ndjson');
   return files;
 };
 const allowedFiles = (name: DataStream): string[] =>
@@ -191,23 +204,58 @@ const nextPosition = (
     const cursor = body['after_cursor'];
     if (typeof cursor !== 'string' || !cursor || cursor === current.params['cursor'])
       throw new Error('Missing or repeated incremental cursor');
-    return { path: streamPath(name), params: { cursor, per_page: '1000' } };
+    return { path: streamPath(name), params: { cursor, per_page: '1000', ...supportScope(name) } };
   }
   // Metric events may omit end_of_stream and always return a polling link.
   if (
     name === 'ticket_metric_events' &&
     body['end_of_stream'] === undefined &&
-    rows(body, name).length < 1000
+    rows(body, responseKey(name)).length < 1000
   )
     return null;
+  if (name === 'side_conversation_events' && body['next_page'] === null) return null;
   const next = nextRequest(body, subdomain);
-  if (next) return next;
+  if (next) return { ...next, params: { ...next.params, ...supportScope(name) } };
   if (typeof body['end_time'] !== 'number')
     throw new Error('Missing end_time on an unfinished incremental page');
   return {
     path: streamPath(name),
-    params: { start_time: String(body['end_time']), per_page: '1000' },
+    params: {
+      start_time: String(body['end_time']),
+      ...incrementalPageSize(name),
+      ...supportScope(name),
+    },
   };
+};
+const responseKey = (name: DataStream): string =>
+  name === 'side_conversation_events' ? 'events' : name;
+
+const recordPath = (key: string): string => `/custom_objects/${encodeURIComponent(key)}/records`;
+const samePath = (path: string, expected: string): boolean =>
+  path === expected || path === `${expected}.json`;
+const validRequest = (request: ApiRequest, paths: string[]): boolean =>
+  paths.some((path) => samePath(request.path, path)) &&
+  Boolean(request.params) &&
+  Object.values(request.params).every((value) => typeof value === 'string');
+const validObjectKey = (key: unknown): key is string =>
+  typeof key === 'string' && key.length > 0 && key !== '.' && key !== '..';
+
+const validatePosition = (name: DataStream, position: Position): void => {
+  const paths = [streamPath(name)];
+  const objects = position.custom_objects;
+  if (objects !== undefined) {
+    if (
+      name !== 'custom_object_records' ||
+      !objects ||
+      !Array.isArray(objects.keys) ||
+      !objects.keys.every(validObjectKey) ||
+      (objects.next_list !== null && !validRequest(objects.next_list, ['/custom_objects']))
+    )
+      throw new Error('Invalid custom object checkpoint');
+    if (objects.keys[0]) paths.push(recordPath(objects.keys[0]));
+  }
+  if (position.request && !validRequest(position.request, paths))
+    throw new Error('Invalid resume request');
 };
 
 const validateOptions = (options: DataExportOptions): void => {
@@ -244,16 +292,7 @@ const validateManifest = (manifest: DataManifest, options: DataExportOptions): v
       !Array.isArray(state.position.previous_ids)
     )
       throw new Error('Invalid stream checkpoint');
-    const request = state.position.request;
-    if (
-      request &&
-      (![streamPath(name as DataStream), `${streamPath(name as DataStream)}.json`].includes(
-        request.path,
-      ) ||
-        !request.params ||
-        Object.values(request.params).some((value) => typeof value !== 'string'))
-    )
-      throw new Error('Invalid resume request');
+    validatePosition(name as DataStream, state.position);
     if (Object.keys(state.files).some((file) => !allowedFiles(name as DataStream).includes(file)))
       throw new Error('Invalid checkpoint filename');
   }
@@ -330,6 +369,7 @@ const getPage = async (
 ): Promise<Body> => {
   const params = {
     ...request.params,
+    ...supportScope(name),
     ...(state.include_used ? { include: state.include_used } : {}),
   };
   try {
@@ -367,10 +407,14 @@ const exportPages = async (
     streamFiles(name).map((file) => [file, state.files[file] ?? { lines: 0, bytes: 0 }]),
   );
   await truncateFiles(snapshot, recorded);
+  const conversations =
+    name === 'side_conversation_events'
+      ? await readConversationKeys(snapshot, state.files['side_conversations.ndjson'])
+      : new Set<string>();
   while (state.position.request) {
     const current = state.position.request;
     const body = await getPage(name, state, current, get, options.subdomain);
-    const raw = rows(body, name);
+    const raw = rows(body, responseKey(name));
     const previous = new Set(state.position.previous_ids);
     // Only time-based pages overlap at their boundary timestamp. A cursor stream
     // can legitimately return a newer version of a record from the previous page,
@@ -378,13 +422,24 @@ const exportPages = async (
     const items = timeBased(name)
       ? raw.filter((item) => !previous.has(item['id'] as string | number))
       : raw;
-    const next = nextPosition(name, body, current, options.subdomain);
+    let next = nextPosition(name, body, current, options.subdomain);
+    // Side events expose a polling link without a documented terminal page size.
+    // The last polling page repeats its boundary events and start_time.
+    if (
+      name === 'side_conversation_events' &&
+      body['end_of_stream'] === undefined &&
+      items.length === 0 &&
+      next?.params['start_time'] === current.params['start_time']
+    )
+      next = null;
     const ids = raw
       .map((item) => item['id'])
       .filter((id): id is string | number => typeof id === 'number' || typeof id === 'string');
     if (next && JSON.stringify(next) === JSON.stringify(current) && items.length === 0)
       throw new Error('Incremental pagination made no progress');
     const files = pageFiles(name, body, items);
+    if (name === 'side_conversation_events')
+      files['side_conversations.ndjson'] = await conversationRows(items, conversations, get);
     // Do not publish new offsets until every file in this page has been flushed.
     const updated = { ...state.files };
     for (const [file, values] of Object.entries(files))
@@ -396,6 +451,138 @@ const exportPages = async (
     await checkpoint();
   }
   // The final page's null position is itself a checkpoint, even before status changes.
+};
+
+const conversationKey = (ticket: unknown, conversation: unknown): string =>
+  JSON.stringify([ticket, conversation]);
+
+/** Rebuild deduplication from committed rows after truncation, including on resume. */
+const readConversationKeys = async (snapshot: string, stats?: FileStats): Promise<Set<string>> => {
+  const seen = new Set<string>();
+  if (!stats?.bytes) return seen;
+  const handle = await open(
+    join(snapshot, 'side_conversations.ndjson'),
+    // biome-ignore lint/suspicious/noBitwiseOperators: Refuse symlink snapshot files.
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const input = createInterface({
+      input: handle.createReadStream({ autoClose: false }),
+      crlfDelay: Number.POSITIVE_INFINITY,
+    });
+    for await (const line of input) {
+      const row = JSON.parse(line) as Body;
+      seen.add(conversationKey(row['ticket_id'], row['id']));
+    }
+  } finally {
+    await handle.close();
+  }
+  return seen;
+};
+
+const conversationRows = async (
+  items: Body[],
+  seen: Set<string>,
+  get: ReturnType<typeof createPacedGet>,
+): Promise<Body[]> => {
+  const conversations: Body[] = [];
+  for (const event of items) {
+    const ticket = event['ticket_id'];
+    const id = event['side_conversation_id'];
+    if (!Number.isSafeInteger(ticket) || (ticket as number) <= 0 || !validObjectKey(id))
+      throw new Error('Missing ticket_id or side_conversation_id on side conversation event');
+    const key = conversationKey(ticket, id);
+    if (seen.has(key)) continue;
+    const body = await get<Body>(
+      'standard',
+      `/tickets/${ticket}/side_conversations/${encodeURIComponent(id)}`,
+    );
+    const conversation = body['side_conversation'];
+    if (!conversation || typeof conversation !== 'object' || Array.isArray(conversation))
+      throw new Error('Expected side_conversation to be an object');
+    conversations.push({ ...conversation, ticket_id: ticket });
+    seen.add(key);
+  }
+  return conversations;
+};
+
+const cursorNext = (body: Body, current: ApiRequest, subdomain: string): ApiRequest | null => {
+  const meta = body['meta'] as { has_more?: boolean } | undefined;
+  if (meta?.has_more === false) return null;
+  const next = nextRequest(body, subdomain);
+  if (!next) {
+    if (meta?.has_more === true) throw new Error('Missing next custom object cursor');
+    return null;
+  }
+  if (!samePath(next.path, current.path.replace(JSON_SUFFIX, '')))
+    throw new Error('Invalid custom object pagination path');
+  const request = { ...next, params: { ...next.params, 'page[size]': '100' } };
+  if (JSON.stringify(request) === JSON.stringify(current))
+    throw new Error('Custom object pagination made no progress');
+  return request;
+};
+
+const objectRequest = (objects: NonNullable<Position['custom_objects']>): ApiRequest | null => {
+  const key = objects.keys[0];
+  return key ? { path: recordPath(key), params: { 'page[size]': '100' } } : objects.next_list;
+};
+
+const customObjectPage = (
+  body: Body,
+  position: Position,
+  next: ApiRequest | null,
+): { values: Body[]; position: Position } => {
+  if (position.request && samePath(position.request.path, '/custom_objects')) {
+    const keys = rows(body, 'custom_objects').map((object) => object['key']);
+    if (!keys.every(validObjectKey)) throw new Error('Invalid custom object key');
+    const objects = { keys, next_list: next };
+    return {
+      values: [],
+      position: { request: objectRequest(objects), previous_ids: [], custom_objects: objects },
+    };
+  }
+  const objects = position.custom_objects;
+  const key = objects?.keys[0];
+  if (!objects || !key) throw new Error('Missing custom object checkpoint key');
+  const values = rows(body, 'custom_object_records').map((record) => ({
+    ...record,
+    custom_object_key: key,
+  }));
+  const remaining = next ? objects : { ...objects, keys: objects.keys.slice(1) };
+  return {
+    values,
+    position: {
+      request: next ?? objectRequest(remaining),
+      previous_ids: [],
+      custom_objects: remaining,
+    },
+  };
+};
+
+const exportCustomObjectRecords = async (
+  state: StreamState,
+  snapshot: string,
+  options: DataExportOptions,
+  get: ReturnType<typeof createPacedGet>,
+  checkpoint: () => Promise<void>,
+): Promise<void> => {
+  const file = 'custom_object_records.ndjson';
+  await truncateFiles(snapshot, { [file]: state.files[file] ?? { lines: 0, bytes: 0 } });
+  while (state.position.request) {
+    const current = state.position.request;
+    const body = await get<Body>('standard', current.path, {
+      ...current.params,
+      'page[size]': '100',
+    });
+    const next = cursorNext(body, current, options.subdomain);
+    const { values, position } = customObjectPage(body, state.position, next);
+    const stats = await appendPage(snapshot, file, values, state.files[file]);
+    state.files = { ...state.files, [file]: stats };
+    state.position = position;
+    state.pages += 1;
+    state.duration_ms = (options.deps ?? defaultDeps).now() - Date.parse(state.started_at);
+    await checkpoint();
+  }
 };
 
 const exportConfig = async (
@@ -505,6 +692,8 @@ const executeExport = async (
     await checkpoint();
     try {
       if (name === 'config') await exportConfig(options, snapshot, state, get, checkpoint);
+      else if (name === 'custom_object_records')
+        await exportCustomObjectRecords(state, snapshot, options, get, checkpoint);
       else await exportPages(name, state, snapshot, options, get, checkpoint);
       state.status = 'exported';
     } catch (err) {

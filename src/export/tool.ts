@@ -20,7 +20,7 @@ export const createDataExportTool = (ctx: ToolContext, exportDir: string): ToolD
   title: 'Export Zendesk Account Data',
   description:
     'Start a resumable bulk export of Zendesk account data to local NDJSON files in the background. ' +
-    'Use it for backups, audits or migration of tickets, users, organizations, events and configuration; use export_account_config for configuration alone, or search_tickets for an interactive lookup. ' +
+    'Use it for backups, audits or migration of tickets (including AI agents), users, organizations, events, custom object records, side conversations and configuration; use export_account_config for configuration alone, or search_tickets for an interactive lookup. ' +
     'Requires an admin sign-in and an operator-configured export directory on a stdio server. It only reads Zendesk with GET requests, creates a new timestamped local snapshot and never downloads attachment content; resume appends after truncating unfinished files to their last checkpoint. ' +
     'Returns the snapshot path and manifest progress immediately; call again while running to check the same job instead of starting another. Exports may take hours and stop when the server process exits; use resume with the returned folder name after a restart. ' +
     'A skipped stream lacks access or availability; failed streams can be resumed. Read manifest.json in the snapshot directory for page counts, file sizes and errors.',
@@ -36,7 +36,7 @@ export const createDataExportTool = (ctx: ToolContext, exportDir: string): ToolD
       .min(1)
       .optional()
       .describe(
-        'Streams to export, for example ["tickets", "users", "ticket_events"]. Omit for all data streams and configuration. Resume may select only streams in the original snapshot.',
+        'Streams to export, for example ["tickets", "users", "ticket_events", "custom_object_records", "side_conversation_events"]. Omit for all data streams and configuration. Custom object records always export in full; side conversation events also export the referenced conversations. Resume may select only streams in the original snapshot.',
       ),
     resume: z
       .string()

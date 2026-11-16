@@ -194,13 +194,16 @@ describe('bulk data export', () => {
         const spec = Object.values(CONFIG_RESOURCES).find((entry) => entry.path === path);
         if (spec)
           return HttpResponse.json({ [spec.responseKey]: spec.single ? { enabled: true } : [] });
+        if (path === '/tickets/side_conversations/events')
+          return HttpResponse.json({ events: [], count: 0, end_time: 1 });
+        if (path === '/custom_objects') return HttpResponse.json({ custom_objects: [] });
         if (path === '/organization_memberships' || path === '/satisfaction_ratings')
           return HttpResponse.json({ [path.slice(1)]: [] });
         return HttpResponse.json({}, { status: 404 });
       }),
     );
     const result = await runDataExport(opts);
-    expect(Object.keys(result.manifest.streams)).toHaveLength(10);
+    expect(Object.keys(result.manifest.streams)).toHaveLength(12);
     expect(
       Object.values(result.manifest.streams).every((stream) => stream.status === 'exported'),
     ).toBe(true);
@@ -618,4 +621,337 @@ it('preserves an unconfirmed SLA sideload object without assuming an array schem
   expect(await lines(result.snapshot, 'ticket_slas.ndjson')).toEqual([
     { ticket_id: 1, policies: [{ id: 3 }] },
   ]);
+});
+
+describe('additional data streams', () => {
+  it.each(['link', 'end_time'])(
+    'keeps all support types on every request using %s pagination',
+    async (pagination) => {
+      const opts = await options();
+      const requests: URL[] = [];
+      mswServer.use(
+        http.get(`${API}/incremental/tickets/cursor`, ({ request }) => {
+          const url = new URL(request.url);
+          requests.push(url);
+          const second = url.searchParams.has('cursor');
+          return HttpResponse.json({
+            tickets: [{ id: second ? 2 : 1 }],
+            after_cursor: 'next',
+            end_of_stream: second,
+          });
+        }),
+        http.get(`${API}/incremental/ticket_events`, ({ request }) => {
+          const url = new URL(request.url);
+          requests.push(url);
+          const second = url.searchParams.get('start_time') === '5';
+          return HttpResponse.json({
+            ticket_events: [{ id: second ? 2 : 1 }],
+            end_time: 5,
+            end_of_stream: second,
+            ...(pagination === 'link'
+              ? {
+                  next_page: `${API}/incremental/ticket_events?start_time=5&support_type_scope=agent`,
+                }
+              : {}),
+          });
+        }),
+      );
+      const result = await runDataExport({ ...opts, streams: ['tickets', 'ticket_events'] });
+      expect(requests).toHaveLength(4);
+      expect(requests.every((url) => url.searchParams.get('support_type_scope') === 'all')).toBe(
+        true,
+      );
+      expect(await lines(result.snapshot, 'tickets.ndjson')).toHaveLength(2);
+      expect(await lines(result.snapshot, 'ticket_events.ndjson')).toHaveLength(2);
+    },
+  );
+
+  it('resumes custom record cursors across objects and definition pages without replaying committed pages', async () => {
+    const opts = await options();
+    const requests: URL[] = [];
+    let fail = true;
+    mswServer.use(
+      http.get(`${API}/custom_objects`, ({ request }) => {
+        const url = new URL(request.url);
+        requests.push(url);
+        const second = url.searchParams.has('page[after]');
+        return HttpResponse.json({
+          custom_objects: [{ key: second ? 'devices' : 'cars' }],
+          meta: { has_more: !second },
+          links: { next: `${API}/custom_objects?page[after]=objects2` },
+        });
+      }),
+      http.get(`${API}/custom_objects/:key/records`, ({ request, params }) => {
+        const url = new URL(request.url);
+        requests.push(url);
+        const second = url.searchParams.has('page[after]');
+        if (second && fail) return HttpResponse.json({}, { status: 422 });
+        return HttpResponse.json({
+          custom_object_records: [{ id: second ? 'r2' : 'r1', name: 'Invented record' }],
+          meta: { has_more: params['key'] === 'cars' && !second },
+          links: { next: `${API}/custom_objects/${params['key']}/records?page[after]=records2` },
+        });
+      }),
+    );
+    const first = await runDataExport({ ...opts, streams: ['custom_object_records'], since: 99 });
+    expect(first.manifest.streams.custom_object_records?.status).toBe('failed');
+    expect(await lines(first.snapshot, 'custom_object_records.ndjson')).toEqual([
+      { id: 'r1', name: 'Invented record', custom_object_key: 'cars' },
+    ]);
+    await appendFile(
+      join(first.snapshot, 'custom_object_records.ndjson'),
+      '{"id":"uncommitted"}\n',
+    );
+    requests.length = 0;
+    fail = false;
+    const result = await runDataExport({ ...opts, resume: basename(first.snapshot) });
+    expect(result.manifest.streams.custom_object_records?.status).toBe('exported');
+    expect(requests.map((url) => url.pathname)).toEqual([
+      '/api/v2/custom_objects/cars/records',
+      '/api/v2/custom_objects',
+      '/api/v2/custom_objects/devices/records',
+    ]);
+    expect(
+      requests.every(
+        (url) =>
+          url.searchParams.get('page[size]') === '100' && !url.searchParams.has('start_time'),
+      ),
+    ).toBe(true);
+    expect(await lines(result.snapshot, 'custom_object_records.ndjson')).toEqual([
+      { id: 'r1', name: 'Invented record', custom_object_key: 'cars' },
+      { id: 'r2', name: 'Invented record', custom_object_key: 'cars' },
+      { id: 'r1', name: 'Invented record', custom_object_key: 'devices' },
+    ]);
+  });
+
+  it('resumes side events with boundary deduplication and reads each conversation once per snapshot', async () => {
+    const opts = await options();
+    let fail = true;
+    const requests: URL[] = [];
+    const conversations: string[] = [];
+    const requestTimes: number[] = [];
+    const firstEvent = { id: 'e1', ticket_id: 8, side_conversation_id: 'sc1', type: 'reply' };
+    const secondEvent = { id: 'e2', ticket_id: 8, side_conversation_id: 'sc1', type: 'update' };
+    const thirdEvent = { id: 'e3', ticket_id: 9, side_conversation_id: 'sc1', type: 'create' };
+    mswServer.use(
+      http.get(`${API}/tickets/side_conversations/events`, ({ request }) => {
+        requestTimes.push(opts.deps.now());
+        const url = new URL(request.url);
+        requests.push(url);
+        const second = url.searchParams.get('start_time') === '5';
+        if (second && fail) return HttpResponse.json({}, { status: 422 });
+        return HttpResponse.json({
+          events: second ? [firstEvent, secondEvent, thirdEvent] : [firstEvent],
+          end_time: 5,
+          end_of_stream: second,
+          next_page: `${API}/tickets/side_conversations/events?start_time=5`,
+        });
+      }),
+      http.get(`${API}/tickets/:ticket/side_conversations/:id`, ({ params }) => {
+        conversations.push(`${params['ticket']}/${params['id']}`);
+        return HttpResponse.json({
+          side_conversation: { id: params['id'], subject: 'Invented conversation' },
+        });
+      }),
+    );
+    const first = await runDataExport({ ...opts, streams: ['side_conversation_events'], since: 3 });
+    expect(first.manifest.streams.side_conversation_events?.status).toBe('failed');
+    expect(
+      first.manifest.streams.side_conversation_events?.position.request?.params['start_time'],
+    ).toBe('5');
+    await appendFile(
+      join(first.snapshot, 'side_conversation_events.ndjson'),
+      '{"id":"uncommitted"}\n',
+    );
+    await appendFile(join(first.snapshot, 'side_conversations.ndjson'), '{"id":"uncommitted"}\n');
+    fail = false;
+    const result = await runDataExport({ ...opts, resume: basename(first.snapshot) });
+    expect(result.manifest.streams.side_conversation_events?.status).toBe('exported');
+    expect(await lines(result.snapshot, 'side_conversation_events.ndjson')).toEqual([
+      firstEvent,
+      secondEvent,
+      thirdEvent,
+    ]);
+    expect(await lines(result.snapshot, 'side_conversations.ndjson')).toEqual([
+      { id: 'sc1', subject: 'Invented conversation', ticket_id: 8 },
+      { id: 'sc1', subject: 'Invented conversation', ticket_id: 9 },
+    ]);
+    expect(conversations).toEqual(['8/sc1', '9/sc1']);
+    expect(requests.map((url) => url.searchParams.get('start_time'))).toEqual(['3', '5', '5']);
+    expect((requestTimes[1] ?? 0) - (requestTimes[0] ?? 0)).toBe(6000);
+  });
+
+  it('stops repeated side event polling pages and deduplicates conversations within a page', async () => {
+    const opts = await options();
+    let calls = 0;
+    let lookups = 0;
+    mswServer.use(
+      http.get(`${API}/tickets/side_conversations/events`, () => {
+        calls += 1;
+        return HttpResponse.json({
+          events: [
+            { id: 'e1', ticket_id: 8, side_conversation_id: 'sc1' },
+            { id: 'e2', ticket_id: 8, side_conversation_id: 'sc1' },
+          ],
+          count: 2,
+          end_time: 5,
+          next_page: `${API}/tickets/side_conversations/events?start_time=5`,
+        });
+      }),
+      http.get(`${API}/tickets/8/side_conversations/sc1`, () => {
+        lookups += 1;
+        return HttpResponse.json({ side_conversation: { id: 'sc1' } });
+      }),
+    );
+    const result = await runDataExport({ ...opts, streams: ['side_conversation_events'] });
+    expect(result.manifest.streams.side_conversation_events?.status).toBe('exported');
+    expect(calls).toBe(2);
+    expect(lookups).toBe(1);
+    expect(await lines(result.snapshot, 'side_conversations.ndjson')).toEqual([
+      { id: 'sc1', ticket_id: 8 },
+    ]);
+  });
+
+  it.each([403, 404])(
+    'skips side conversations without the add-on (HTTP %s) and continues',
+    async (status) => {
+      const opts = await options();
+      mswServer.use(
+        http.get(`${API}/tickets/side_conversations/events`, () =>
+          HttpResponse.json({}, { status }),
+        ),
+        http.get(`${API}/groups`, () => HttpResponse.json({ groups: [{ id: 1 }] })),
+      );
+      const result = await runDataExport({
+        ...opts,
+        streams: ['side_conversation_events', 'groups'],
+      });
+      expect(result.manifest.streams.side_conversation_events).toMatchObject({
+        status: 'skipped',
+        reason: expect.any(String),
+        requests: 1,
+      });
+      expect(result.manifest.streams.groups?.status).toBe('exported');
+    },
+  );
+});
+
+it('retries an uncommitted side event page if a conversation lookup fails', async () => {
+  const opts = await options();
+  let fail = true;
+  const lookups: string[] = [];
+  const events = [
+    { id: 'e1', ticket_id: 8, side_conversation_id: 'sc1' },
+    { id: 'e2', ticket_id: 8, side_conversation_id: 'sc2' },
+  ];
+  mswServer.use(
+    http.get(`${API}/tickets/side_conversations/events`, () =>
+      HttpResponse.json({ events, end_of_stream: true }),
+    ),
+    http.get(`${API}/tickets/8/side_conversations/:id`, ({ params }) => {
+      const id = String(params['id']);
+      lookups.push(id);
+      return fail && id === 'sc2'
+        ? HttpResponse.json({}, { status: 422 })
+        : HttpResponse.json({ side_conversation: { id } });
+    }),
+  );
+  const first = await runDataExport({ ...opts, streams: ['side_conversation_events'] });
+  expect(first.manifest.streams.side_conversation_events?.status).toBe('failed');
+  expect(first.manifest.streams.side_conversation_events?.files).toEqual({});
+  fail = false;
+  const result = await runDataExport({ ...opts, resume: basename(first.snapshot) });
+  expect(result.manifest.streams.side_conversation_events?.status).toBe('exported');
+  expect(await lines(result.snapshot, 'side_conversation_events.ndjson')).toEqual(events);
+  expect(await lines(result.snapshot, 'side_conversations.ndjson')).toEqual([
+    { id: 'sc1', ticket_id: 8 },
+    { id: 'sc2', ticket_id: 8 },
+  ]);
+  expect(lookups).toEqual(['sc1', 'sc2', 'sc1', 'sc2']);
+});
+
+it('exports every object on a definition page even when preceding objects have no records', async () => {
+  const opts = await options();
+  const keys: string[] = [];
+  mswServer.use(
+    http.get(`${API}/custom_objects`, () =>
+      HttpResponse.json({
+        custom_objects: [{ key: 'cars' }, { key: 'devices' }],
+        meta: { has_more: false },
+      }),
+    ),
+    http.get(`${API}/custom_objects/:key/records`, ({ params }) => {
+      keys.push(String(params['key']));
+      return HttpResponse.json({
+        custom_object_records: params['key'] === 'cars' ? [] : [{ id: 'r1' }],
+        meta: { has_more: false },
+      });
+    }),
+  );
+  const result = await runDataExport({ ...opts, streams: ['custom_object_records'] });
+  expect(result.manifest.streams.custom_object_records?.status).toBe('exported');
+  expect(keys).toEqual(['cars', 'devices']);
+  expect(await lines(result.snapshot, 'custom_object_records.ndjson')).toEqual([
+    { id: 'r1', custom_object_key: 'devices' },
+  ]);
+});
+
+it('pages full side event batches without end_of_stream and stops at the short polling page', async () => {
+  const opts = await options();
+  let pages = 0;
+  let lookups = 0;
+  const events = Array.from({ length: 1000 }, (_, id) => ({
+    id: `e${id}`,
+    ticket_id: 8,
+    side_conversation_id: 'sc1',
+  }));
+  mswServer.use(
+    http.get(`${API}/tickets/side_conversations/events`, ({ request }) => {
+      pages += 1;
+      const second = new URL(request.url).searchParams.get('start_time') === '5';
+      return HttpResponse.json({
+        events: second ? [events[999]] : events,
+        count: second ? 1 : 1000,
+        end_time: 5,
+        next_page: `${API}/tickets/side_conversations/events?start_time=5`,
+      });
+    }),
+    http.get(`${API}/tickets/8/side_conversations/sc1`, () => {
+      lookups += 1;
+      return HttpResponse.json({ side_conversation: { id: 'sc1' } });
+    }),
+  );
+  const result = await runDataExport({ ...opts, streams: ['side_conversation_events'] });
+  expect(result.manifest.streams.side_conversation_events?.status).toBe('exported');
+  expect(pages).toBe(2);
+  expect(lookups).toBe(1);
+  expect(await lines(result.snapshot, 'side_conversation_events.ndjson')).toHaveLength(1000);
+  expect(await lines(result.snapshot, 'side_conversations.ndjson')).toHaveLength(1);
+});
+
+it('follows short side event pages until next_page is null without assuming a page size', async () => {
+  const opts = await options();
+  let pages = 0;
+  let lookups = 0;
+  mswServer.use(
+    http.get(`${API}/tickets/side_conversations/events`, ({ request }) => {
+      pages += 1;
+      const second = new URL(request.url).searchParams.get('start_time') === '5';
+      return HttpResponse.json({
+        events: [{ id: second ? 'e2' : 'e1', ticket_id: 8, side_conversation_id: 'sc1' }],
+        count: 1,
+        end_time: 5,
+        next_page: second ? null : `${API}/tickets/side_conversations/events?start_time=5`,
+      });
+    }),
+    http.get(`${API}/tickets/8/side_conversations/sc1`, () => {
+      lookups += 1;
+      return HttpResponse.json({ side_conversation: { id: 'sc1' } });
+    }),
+  );
+  const result = await runDataExport({ ...opts, streams: ['side_conversation_events'] });
+  expect(result.manifest.streams.side_conversation_events?.status).toBe('exported');
+  expect(pages).toBe(2);
+  expect(lookups).toBe(1);
+  expect(await lines(result.snapshot, 'side_conversation_events.ndjson')).toHaveLength(2);
 });

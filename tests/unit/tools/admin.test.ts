@@ -10,6 +10,7 @@ import {
   nextRequest,
   snapshotDirName,
 } from '../../../src/export/account-config';
+import { filterTools } from '../../../src/routing/registry';
 import { createAdminTools } from '../../../src/tools/admin';
 import type { ToolContext } from '../../../src/tools/definitions';
 import { mswServer } from '../../setup';
@@ -55,7 +56,7 @@ afterEach(async () => {
 describe('admin tools', () => {
   it('registers the export: Zendesk-read-only, but honest that it writes local files', () => {
     const tools = createAdminTools(exportCtx());
-    expect(tools).toHaveLength(3);
+    expect(tools).toHaveLength(4);
     expect(tools[0]).toMatchObject({
       name: 'export_account_config',
       namespace: 'admin',
@@ -76,7 +77,195 @@ describe('admin tools', () => {
   });
 });
 
+describe('list_api_tokens', () => {
+  const tokenTool = () => {
+    const tool = filterTools(createAdminTools(exportCtx()), { readOnly: true }).find(
+      (candidate) => candidate.name === 'list_api_tokens',
+    );
+    if (!tool) throw new Error('list_api_tokens not found on a read-only server');
+    return tool;
+  };
+
+  it('is registered in admin with read-only annotations and no input parameters', () => {
+    const tool = tokenTool();
+    expect(tool).toMatchObject({
+      namespace: 'admin',
+      readOnly: true,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    });
+    expect(tool.inputSchema.parse({})).toEqual({});
+  });
+
+  it('reads every page, preserving metadata and last_used while excluding token values', async () => {
+    const pages: Array<string | null> = [];
+    mswServer.use(
+      http.get(`${API}/api_tokens`, ({ request }) => {
+        pages.push(new URL(request.url).searchParams.get('page'));
+        return HttpResponse.json({
+          api_tokens: [
+            {
+              id: 1,
+              description: 'Reporting',
+              active: true,
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-02-01T00:00:00Z',
+              last_used: '2026-11-01T00:00:00Z',
+              token: 'synthetic-secret',
+              visible_token: 'synthetic-prefix',
+              user_email: 'test@example.com',
+            },
+          ],
+          next_page: `${API}/api_tokens.json?page=2`,
+        });
+      }),
+      http.get(`${API}/api_tokens.json`, ({ request }) => {
+        const page = new URL(request.url).searchParams.get('page');
+        pages.push(page);
+        return HttpResponse.json({
+          api_tokens: [
+            {
+              id: Number(page),
+              description: null,
+              active: false,
+              created_at: '2026-01-02T00:00:00Z',
+              updated_at: null,
+              last_used: null,
+              token: 'another-synthetic-secret',
+              visible_token: 'another-prefix',
+            },
+          ],
+          next_page: page === '2' ? `${API}/api_tokens.json?page=3` : null,
+        });
+      }),
+    );
+
+    const result = await tokenTool().handler({});
+
+    expect(pages).toEqual([null, '2', '3']);
+    expect(JSON.parse(textOf(result))).toMatchInlineSnapshot(`
+      {
+        "api_tokens": [
+          {
+            "active": true,
+            "created_at": "2026-01-01T00:00:00Z",
+            "description": "Reporting",
+            "id": 1,
+            "last_used": "2026-11-01T00:00:00Z",
+            "updated_at": "2026-02-01T00:00:00Z",
+          },
+          {
+            "active": false,
+            "created_at": "2026-01-02T00:00:00Z",
+            "description": null,
+            "id": 2,
+            "last_used": null,
+            "updated_at": null,
+          },
+          {
+            "active": false,
+            "created_at": "2026-01-02T00:00:00Z",
+            "description": null,
+            "id": 3,
+            "last_used": null,
+            "updated_at": null,
+          },
+        ],
+      }
+    `);
+  });
+
+  it('returns an empty list when the account has no API tokens', async () => {
+    mswServer.use(http.get(`${API}/api_tokens`, () => HttpResponse.json({ api_tokens: [] })));
+    expect(JSON.parse(textOf(await tokenTool().handler({})))).toMatchInlineSnapshot(`
+      {
+        "api_tokens": [],
+      }
+    `);
+  });
+
+  it('refuses pagination outside this account without sending credentials there', async () => {
+    let foreignCalls = 0;
+    mswServer.use(
+      http.get(`${API}/api_tokens`, () =>
+        HttpResponse.json({
+          api_tokens: [],
+          next_page: 'https://attacker.example.com/api/v2/api_tokens?page=2',
+        }),
+      ),
+      http.get('https://attacker.example.com/*', () => {
+        foreignCalls += 1;
+        return HttpResponse.json({ api_tokens: [] });
+      }),
+    );
+    await expect(tokenTool().handler({})).rejects.toThrow('Refusing to follow a pagination link');
+    expect(foreignCalls).toBe(0);
+  });
+
+  it('propagates permission failures instead of returning an empty inventory', async () => {
+    mswServer.use(http.get(`${API}/api_tokens`, () => new HttpResponse(null, { status: 403 })));
+    await expect(tokenTool().handler({})).rejects.toMatchObject({ status: 403 });
+  });
+});
+
 describe('export_account_config', () => {
+  it.each(['cursor', 'offset fallback'])(
+    'requests and exports macro usage on every page with %s pagination',
+    async (pagination) => {
+      const queries: Record<string, string>[] = [];
+      mswServer.use(
+        http.get(`${API}/macros`, ({ request }) => {
+          const query = Object.fromEntries(new URL(request.url).searchParams);
+          queries.push(query);
+          if (pagination === 'offset fallback' && query['page[size]']) {
+            return HttpResponse.json({ error: 'Invalid pagination' }, { status: 400 });
+          }
+          const last = query['page[after]'] === 'c1' || query['page'] === '2';
+          const usage =
+            query['include'] === 'usage_7d,usage_30d'
+              ? { usage_7d: last ? 0 : 7, usage_30d: last ? 0 : 30 }
+              : {};
+          return HttpResponse.json({
+            macros: [{ id: last ? 2 : 1, ...usage }],
+            ...(pagination === 'cursor'
+              ? {
+                  meta: { has_more: !last },
+                  links: {
+                    next: last ? null : `${API}/macros?page%5Bafter%5D=c1&page%5Bsize%5D=100`,
+                  },
+                }
+              : { next_page: last ? null : `${API}/macros?page=2&per_page=100` }),
+          });
+        }),
+      );
+
+      await exportTool().handler({ resources: ['macros'] });
+
+      expect(queries).toHaveLength(pagination === 'cursor' ? 2 : 3);
+      for (const query of queries) expect(query['include']).toBe('usage_7d,usage_30d');
+      expect(queries[0]?.['page[size]']).toBe('100');
+      const snapshot = await snapshotOf(root);
+      expect(await readJson(join(snapshot, 'macros.json'))).toMatchInlineSnapshot(`
+        [
+          {
+            "id": 1,
+            "usage_30d": 30,
+            "usage_7d": 7,
+          },
+          {
+            "id": 2,
+            "usage_30d": 0,
+            "usage_7d": 0,
+          },
+        ]
+      `);
+    },
+  );
+
   it('writes each resource to its own file in a new snapshot folder, with a manifest and a summary', async () => {
     mswServer.use(
       http.get(`${API}/triggers`, () =>
