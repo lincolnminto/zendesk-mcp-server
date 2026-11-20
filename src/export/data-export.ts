@@ -64,6 +64,19 @@ export interface StreamState {
   finished_at?: string;
   duration_ms: number;
   reason?: string;
+  /** What Zendesk's 403 response body said; see `zendeskErrorBody`. */
+  zendesk_error?: ZendeskErrorBody;
+  /** How to recover from a skip whose likely cause is known. */
+  hint?: string;
+}
+/**
+ * The documented `error` / `description` strings of a Zendesk error body, or,
+ * for a body without them (another JSON shape, an HTML page), a short excerpt.
+ */
+export interface ZendeskErrorBody {
+  error?: string;
+  description?: string;
+  body?: string;
 }
 export interface DataManifest {
   subdomain: string;
@@ -643,9 +656,39 @@ const exportConfig = async (
   state.position.request = null;
 };
 
+const BODY_EXCERPT_MAX = 500;
+const WHITESPACE_RUN = /\s+/g;
+
+// Only the response body is kept: never the request, its headers or the token.
+export const zendeskErrorBody = (body: string): ZendeskErrorBody | undefined => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    parsed = undefined;
+  }
+  const fields = (parsed ?? {}) as Record<string, unknown>;
+  const summary: ZendeskErrorBody = {};
+  if (typeof fields['error'] === 'string') summary.error = fields['error'];
+  if (typeof fields['description'] === 'string') summary.description = fields['description'];
+  if (summary.error !== undefined || summary.description !== undefined) return summary;
+  const excerpt = body.replace(WHITESPACE_RUN, ' ').trim().slice(0, BODY_EXCERPT_MAX);
+  return excerpt ? { body: excerpt } : undefined;
+};
+
+// Side conversations sit outside the global `read` scope, and tokens signed in
+// before the server asked for `side_conversations:read` do not hold it.
+const sideConversationsHint = (subdomain: string): string =>
+  'The OAuth token may lack the side_conversations:read scope (sign-ins before it was ' +
+  `requested hold only read). Re-authorize with "zendesk-mcp-server login ${subdomain} ` +
+  '--read-only" (without --read-only for a read-write server), then export ' +
+  'side_conversation_events again.';
+
 const recordFailure = async (
+  name: DataStream,
   err: unknown,
   state: StreamState,
+  options: DataExportOptions,
   get: ReturnType<typeof createPacedGet>,
   checkpoint: () => Promise<void>,
 ): Promise<void> => {
@@ -655,6 +698,11 @@ const recordFailure = async (
   if (err.status === 403 || err.status === 404) {
     state.status = 'skipped';
     state.reason = skipReason(err);
+  }
+  if (err.status === 403) {
+    const detail = zendeskErrorBody(err.body);
+    if (detail) state.zendesk_error = detail;
+    if (name === 'side_conversation_events') state.hint = sideConversationsHint(options.subdomain);
   }
   if (err.status !== 401) return;
   try {
@@ -692,6 +740,8 @@ const executeExport = async (
     if (state.status === 'pending') state.started_at = new Date(deps.now()).toISOString();
     state.status = 'running';
     delete state.reason;
+    delete state.zendesk_error;
+    delete state.hint;
     delete state.finished_at;
     await checkpoint();
     try {
@@ -703,7 +753,7 @@ const executeExport = async (
     } catch (err) {
       state.finished_at = new Date(deps.now()).toISOString();
       state.duration_ms = deps.now() - Date.parse(state.started_at);
-      await recordFailure(err, state, get, checkpoint);
+      await recordFailure(name, err, state, options, get, checkpoint);
     }
     state.finished_at = new Date(deps.now()).toISOString();
     state.duration_ms = deps.now() - Date.parse(state.started_at);

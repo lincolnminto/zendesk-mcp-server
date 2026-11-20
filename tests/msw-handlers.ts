@@ -548,7 +548,11 @@ export const commentsWithUsersSideloadHandler = http.get(`${BASE}/tickets/:id/co
 );
 
 export const oauthTokenHandler = http.post('https://testsubdomain.zendesk.com/oauth/tokens', () =>
-  HttpResponse.json({ access_token: 'token-abc', token_type: 'bearer', scope: 'read write' }),
+  HttpResponse.json({
+    access_token: 'token-abc',
+    token_type: 'bearer',
+    scope: 'read write side_conversations:read side_conversations:write',
+  }),
 );
 
 // Opt-in error handlers for tests that exercise failure paths. Kept here so all

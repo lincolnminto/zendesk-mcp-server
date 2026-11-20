@@ -5,7 +5,7 @@ import { HttpResponse, http } from 'msw';
 import { describe, expect, it } from 'vitest';
 import { CONFIG_RESOURCES } from '../../../src/export/account-config';
 import { parseExportArgs } from '../../../src/export/cli';
-import { parseSince, runDataExport } from '../../../src/export/data-export';
+import { parseSince, runDataExport, zendeskErrorBody } from '../../../src/export/data-export';
 import { mswServer } from '../../setup';
 
 const API = 'https://testsubdomain.zendesk.com/api/v2';
@@ -873,6 +873,102 @@ describe('additional data streams', () => {
       expect(result.manifest.streams.groups?.status).toBe('exported');
     },
   );
+
+  it('records what a 403 body said and, for side conversations, how to re-authorize', async () => {
+    const opts = { ...(await options()), getToken: () => 'Bearer-value-never-stored' };
+    mswServer.use(
+      http.get(`${API}/tickets/side_conversations/events`, () =>
+        HttpResponse.json(
+          { error: 'Forbidden', description: 'You do not have access to this page.' },
+          { status: 403 },
+        ),
+      ),
+      http.get(
+        `${API}/groups`,
+        () => new HttpResponse('<html>\n  <body>Forbidden</body>\n</html>', { status: 403 }),
+      ),
+      http.get(`${API}/group_memberships`, () =>
+        HttpResponse.json({ error: 'InvalidEndpoint', description: 'Not found' }, { status: 404 }),
+      ),
+    );
+    const result = await runDataExport({
+      ...opts,
+      streams: ['side_conversation_events', 'groups', 'group_memberships'],
+    });
+    const { streams } = result.manifest;
+    expect(streams.side_conversation_events).toMatchObject({
+      status: 'skipped',
+      reason:
+        'No access (403 Forbidden): the signed-in account cannot read it, or the plan lacks it.',
+      zendesk_error: { error: 'Forbidden', description: 'You do not have access to this page.' },
+      hint: 'The OAuth token may lack the side_conversations:read scope (sign-ins before it was requested hold only read). Re-authorize with "zendesk-mcp-server login testsubdomain --read-only" (without --read-only for a read-write server), then export side_conversation_events again.',
+    });
+    expect(streams.groups).toMatchObject({
+      status: 'skipped',
+      zendesk_error: { body: '<html> <body>Forbidden</body> </html>' },
+    });
+    expect(streams.groups).not.toHaveProperty('hint');
+    expect(streams.group_memberships?.status).toBe('skipped');
+    expect(streams.group_memberships).not.toHaveProperty('zendesk_error');
+    const saved = await readFile(join(result.snapshot, 'manifest.json'), 'utf8');
+    expect(JSON.parse(saved).streams.side_conversation_events.zendesk_error).toEqual({
+      error: 'Forbidden',
+      description: 'You do not have access to this page.',
+    });
+    expect(saved).not.toContain('Bearer-value-never-stored');
+  });
+
+  it('clears a previous failure detail when a stream runs again', async () => {
+    const opts = await options();
+    let status = 422;
+    mswServer.use(
+      http.get(`${API}/groups`, () =>
+        status === 200
+          ? HttpResponse.json({ groups: [{ id: 1 }] })
+          : HttpResponse.json({ error: 'Unprocessable' }, { status }),
+      ),
+    );
+    const first = await runDataExport({ ...opts, streams: ['groups'] });
+    expect(first.manifest.streams.groups?.status).toBe('failed');
+    const path = join(first.snapshot, 'manifest.json');
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    manifest.streams.groups.zendesk_error = { error: 'Forbidden' };
+    manifest.streams.groups.hint = 'stale';
+    await writeFile(path, JSON.stringify(manifest));
+    status = 200;
+    const resumed = await runDataExport({ ...opts, resume: basename(first.snapshot) });
+    expect(resumed.manifest.streams.groups?.status).toBe('exported');
+    expect(resumed.manifest.streams.groups).not.toHaveProperty('zendesk_error');
+    expect(resumed.manifest.streams.groups).not.toHaveProperty('hint');
+  });
+});
+
+describe('zendeskErrorBody', () => {
+  it.each([
+    [
+      '{"error":"Forbidden","description":"No access"}',
+      { error: 'Forbidden', description: 'No access' },
+    ],
+    ['{"error":"Forbidden","details":{}}', { error: 'Forbidden' }],
+    ['{"description":"No access","error":{"title":"Forbidden"}}', { description: 'No access' }],
+    [
+      '{"error":{"title":"Forbidden","message":"No"}}',
+      { body: '{"error":{"title":"Forbidden","message":"No"}}' },
+    ],
+    ['{"errors":[{"title":"Forbidden"}]}', { body: '{"errors":[{"title":"Forbidden"}]}' }],
+    ['null', { body: 'null' }],
+    ['  Forbidden\n\tby  policy ', { body: 'Forbidden by policy' }],
+  ])('summarizes %j', (body, expected) => {
+    expect(zendeskErrorBody(body)).toEqual(expected);
+  });
+
+  it.each([[''], ['  \n ']])('has nothing to record for an empty body %j', (body) => {
+    expect(zendeskErrorBody(body)).toBeUndefined();
+  });
+
+  it('keeps at most 500 characters of a body without error fields', () => {
+    expect(zendeskErrorBody('x'.repeat(600))).toEqual({ body: 'x'.repeat(500) });
+  });
 });
 
 it('retries an uncommitted side event page if a conversation lookup fails', async () => {

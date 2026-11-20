@@ -89,7 +89,7 @@ request after an overnight gap never surfaces an auth error. And it refreshes
 stale token. Only an expired or invalid refresh token triggers a new browser
 sign-in.
 
-A server started with `--read-only` keeps its `read`-scoped token in
+A server started with `--read-only` keeps its read-scoped token in
 `<subdomain>.read.json` next to it, and signs in afresh when that record cannot
 prove it is read-scoped: the log then says `oauth_token_scope_rejected`. Expect
 that once after upgrading (older records carry no scope), and every time when a
@@ -99,6 +99,27 @@ read-only and a read-write server; give each its own file instead.
 If you still re-authenticate every time, check that the file is writable
 ([`ZENDESK_TOKEN_FILE`](configuration.md#zendesk_token_file) to relocate it) and
 look for `token_persist_failed` in the logs.
+
+## `export-data` skips `side_conversation_events` with a 403
+
+Side conversations need the `side_conversations:read` OAuth scope, which the
+global `read` scope does not cover. A token signed in before the server requested
+it holds only `read` (or `read write`): it keeps working for everything else, but
+the stream comes back `skipped` with a `hint` in `manifest.json`, next to
+`zendesk_error`, what Zendesk's 403 body said. Re-authorize and export the stream
+again:
+
+```bash
+zendesk-mcp-server login <subdomain> --read-only
+zendesk-mcp-server export-data <subdomain> --export-dir /absolute/local/backups \
+  --only side_conversation_events
+```
+
+`export-data` signs in read-only; for the `export_data` tool of a read-write
+server, run `login <subdomain>` without `--read-only`. If `login` warns that
+Zendesk did not grant `side_conversations:read`, the account or its OAuth client
+does not allow that scope, and the 403 is not a token problem
+([`login`](configuration.md#re-authorize-login)).
 
 ## My HTTP session disappears after a pause, even though the stream stayed up
 

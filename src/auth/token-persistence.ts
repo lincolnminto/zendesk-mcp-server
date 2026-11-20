@@ -73,7 +73,10 @@ export const resolveTokenPath = (
 
 // Atomic write (tmp + rename) so a crash mid-write can't leave a truncated file,
 // with owner-only perms on the file and its dir where the OS supports it.
-const writeFileAtomic = (path: string, record: PersistedToken): void => {
+// Throws on failure: `saveToken` wraps it for the server, which must never fail
+// the auth flow over a cache write; the `login` command, whose whole job is the
+// write, calls it directly.
+export const writeFileAtomic = (path: string, record: PersistedToken): void => {
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;

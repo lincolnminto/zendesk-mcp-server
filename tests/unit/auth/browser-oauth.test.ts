@@ -131,10 +131,12 @@ describe('authenticateViaBrowser', () => {
     expect(openedUrl.searchParams.get('redirect_uri')).toMatch(
       /^http:\/\/localhost:\d+\/callback$/,
     );
-    expect(openedUrl.searchParams.get('scope')).toBe('read write');
+    expect(openedUrl.searchParams.get('scope')).toBe(
+      'read write side_conversations:read side_conversations:write',
+    );
   });
 
-  it('asks Zendesk for the scope it is given, so a read-only server signs in with read only', async () => {
+  it('asks Zendesk for the scope it is given, so a read-only server signs in with read scopes only', async () => {
     mswServer.use(oauthTokenHandler);
     openMock.mockResolvedValue({});
 
@@ -142,10 +144,12 @@ describe('authenticateViaBrowser', () => {
       subdomain: SUB,
       oauthClientId: CLIENT_ID,
       callbackPort: 0,
-      scope: 'read',
+      scope: 'read side_conversations:read',
     });
 
-    expect(new URL(started.authorizeUrl).searchParams.get('scope')).toBe('read');
+    expect(new URL(started.authorizeUrl).searchParams.get('scope')).toBe(
+      'read side_conversations:read',
+    );
     const redirectUri = new URL(started.authorizeUrl).searchParams.get('redirect_uri') ?? '';
     await fetch(`${redirectUri}?code=the-auth-code`);
     await started.tokenPromise;

@@ -201,6 +201,13 @@ describe('token-persistence', () => {
     expect(() => saveToken('/cfg/acme.json', { accessToken: 'x' })).not.toThrow();
   });
 
+  it('lets the direct writer throw when the write fails, for callers whose job is the write', async () => {
+    failWrite = true;
+    const { writeFileAtomic } = await importFresh();
+    expect(() => writeFileAtomic('/cfg/acme.json', { accessToken: 'x' })).toThrow('EACCES');
+    expect(files.has('/cfg/acme.json')).toBe(false);
+  });
+
   it('does not chmod on Windows', async () => {
     setPlatform('win32');
     const { saveToken } = await importFresh();

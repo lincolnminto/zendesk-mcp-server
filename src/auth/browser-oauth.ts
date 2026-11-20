@@ -5,7 +5,7 @@ import { release } from 'node:os';
 import open from 'open';
 import { DEFAULT_CALLBACK_PORT, getOAuthUrls } from '../constants';
 import { type Logger, silentLogger } from '../utils/logger';
-import type { OAuthScope } from './oauth-scope';
+import { type OAuthScope, requestedScope } from './oauth-scope';
 
 const AUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -23,7 +23,7 @@ interface BrowserOAuthConfig {
   subdomain: string;
   oauthClientId: string;
   callbackPort?: number | undefined;
-  /** Scope to request on the authorize call; `read write` when omitted. */
+  /** Scope to request on the authorize call; the read-write scope when omitted. */
   scope?: OAuthScope | undefined;
 }
 
@@ -276,7 +276,7 @@ export const startBrowserAuth = (
         response_type: 'code',
         client_id: oauthClientId,
         redirect_uri: redirectUri,
-        scope: config.scope ?? 'read write',
+        scope: config.scope ?? requestedScope(false),
         code_challenge: codeChallenge,
         code_challenge_method: 'S256',
       });
