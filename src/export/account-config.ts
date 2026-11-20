@@ -41,6 +41,7 @@ export const RESOURCE_KEYS = [
   'ticket_forms',
   'ticket_fields',
   'custom_statuses',
+  'ticket_form_statuses',
   'user_fields',
   'organization_fields',
   'triggers',
@@ -89,6 +90,9 @@ export const CONFIG_RESOURCES: Readonly<Record<ConfigResourceKey, ConfigResource
   ticket_forms: { path: '/ticket_forms', responseKey: 'ticket_forms' },
   ticket_fields: { path: '/ticket_fields', responseKey: 'ticket_fields' },
   custom_statuses: { path: '/custom_statuses', responseKey: 'custom_statuses' },
+  // Which custom statuses each ticket form offers. Documented as unpaged; the
+  // generic cursor-first read still copes should Zendesk start paging it.
+  ticket_form_statuses: { path: '/ticket_form_statuses', responseKey: 'ticket_form_statuses' },
   user_fields: { path: '/user_fields', responseKey: 'user_fields' },
   organization_fields: { path: '/organization_fields', responseKey: 'organization_fields' },
   triggers: { path: '/triggers', responseKey: 'triggers' },

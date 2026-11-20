@@ -218,6 +218,11 @@ Cursor pagination remains the default: the restriction on usage-based sorting
 does not apply to requesting usage sideloads. See [List Macros](https://developer.zendesk.com/api-reference/ticketing/business-rules/macros/#list-macros)
 and [side-loading](https://developer.zendesk.com/documentation/api-basics/working-with-data/side_loading/).
 
+`ticket_form_statuses.json` holds the account's form-to-status associations
+(`id`, `ticket_form_id`, `custom_status_id`), which decide the custom statuses
+the agent's status picker offers on each ticket form; snapshots taken before
+this resource existed lack the file. See [Ticket Form Statuses](https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_form_statuses/).
+
 The same admin namespace includes `list_api_tokens`, a read-only inventory that
 follows all pages and returns metadata including `last_used` (null for a token
 never used). It filters out full and truncated token values and writes no files.
