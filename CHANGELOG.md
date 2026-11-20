@@ -1,3 +1,9 @@
+## [2.27.0](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.26.0...v2.27.0) (2026-11-20)
+
+### Features
+
+* **export:** export-data with AI-agent tickets, side conversations, custom object records, macro usage and API token audit ([#8](https://github.com/lincolnminto/zendesk-mcp-server/issues/8)) ([1e9d79a](https://github.com/lincolnminto/zendesk-mcp-server/commit/1e9d79a42473f3d137472f9f05381d61b3066526))
+
 ## [2.26.0](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.25.0...v2.26.0) (2026-11-11)
 
 ### Features
