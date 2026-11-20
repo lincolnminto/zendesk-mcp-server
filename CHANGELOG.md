@@ -1,3 +1,9 @@
+## [2.28.0](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.27.1...v2.28.0) (2026-11-20)
+
+### Features
+
+* **export:** export ticket form statuses with the account configuration ([#10](https://github.com/lincolnminto/zendesk-mcp-server/issues/10)) ([1fd5dac](https://github.com/lincolnminto/zendesk-mcp-server/commit/1fd5dac2ed4db203418089d762d56ec6aac96515))
+
 ## [2.27.1](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.27.0...v2.27.1) (2026-11-20)
 
 ### Bug Fixes
