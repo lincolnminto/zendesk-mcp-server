@@ -211,6 +211,20 @@ available with `--read-only` (it only reads from Zendesk). In `single` mode,
 enabling it therefore makes the one `zendesk` proxy report `readOnlyHint: false`
 as well; prefer the default `namespace` mode, where only `zendesk_admin` does.
 
+Macro snapshots request `include=usage_7d,usage_30d` on every page, preserving
+the usage counters on each macro. Zendesk supports these sideloads on Support
+Professional or Suite Growth and above, with up to 100 macros per page.
+Cursor pagination remains the default: the restriction on usage-based sorting
+does not apply to requesting usage sideloads. See [List Macros](https://developer.zendesk.com/api-reference/ticketing/business-rules/macros/#list-macros)
+and [side-loading](https://developer.zendesk.com/documentation/api-basics/working-with-data/side_loading/).
+
+The same admin namespace includes `list_api_tokens`, a read-only inventory that
+follows all pages and returns metadata including `last_used` (null for a token
+never used). It filters out full and truncated token values and writes no files.
+Requires an admin or an agent with Manage APIs permission. The [official OpenAPI
+contract](https://developer.zendesk.com/zendesk/oas.yaml) documents the fields and
+marks the endpoint deprecated, with removal scheduled for April 30, 2027.
+
 ### `ZENDESK_EMAIL`
 **Required:** only to activate stdio API-token auth (paired with `ZENDESK_API_TOKEN`) · **Default:** none
 
@@ -313,3 +327,137 @@ Hard cap on the number of article pages scanned to find promoted ("featured") ar
 ---
 
 ← Back to the [README](../README.md).
+
+## Bulk data export (`export-data`)
+
+Use the standalone subcommand for long account snapshots without starting an MCP
+server:
+
+```bash
+zendesk-mcp-server export-data acme --export-dir /absolute/local/backups
+zendesk-mcp-server export-data acme --export-dir /absolute/local/backups \
+  --since 2025-01-01T00:00:00Z --only tickets --only ticket_events --rate 200
+zendesk-mcp-server export-data acme --export-dir /absolute/local/backups \
+  --resume acme-data-2026-01-01T00-00-00-000Z
+```
+
+An admin sign-in is required. Authentication uses the same API-token environment
+pair as stdio, or OAuth with **read scope only**. If OAuth needs authorization,
+the CLI prints the authorization URL to stderr and polls every three seconds for
+up to ten minutes. Progress goes to stderr; stdout receives a final JSON summary
+with the snapshot path, per-stream file line/byte counts, status and duration.
+Exit code is 1 if a stream failed, otherwise 0 (unavailable streams are skipped).
+Unknown flags and invalid arguments fail before authentication or network access.
+
+| Flag | Meaning |
+| ---- | ------- |
+| `--export-dir <absolute-local-path>` | Required destination parent directory; snapshots use a new `<subdomain>-data-<UTC timestamp>` folder and never overwrite an earlier snapshot. Network paths and symlink directories are refused. |
+| `--since <ISO-date-or-epoch-seconds>` | Incremental start time, default 0 (all available history). List streams and configuration always export in full. |
+| `--only <stream>` | Repeat to select streams; omit for all streams below. |
+| `--resume <snapshot-folder-name>` | Resume inside the same export directory. Folder names cannot contain separators or `..`. The original start time is preserved; any supplied `--since` must match. Only originally selected streams can be resumed. |
+| `--rate <requests-per-minute>` | Standard request bucket, default 300. All incremental endpoints share a separate bucket of 10 requests/minute. |
+| `--log-level <debug\|info\|warn\|error>` | Stderr progress verbosity, default `info`. Authorization URLs remain visible at every level. |
+
+Streams run sequentially in this order:
+
+| Stream | Files |
+| ------ | ----- |
+| `tickets` | `tickets.ndjson` (including deleted tickets and AI-agent tickets via `support_type_scope=all` on every request), `ticket_metrics.ndjson`; `ticket_slas.ndjson` only when returned by the sideload. Ticket includes fall back from `metric_sets,dates,slas` to `metric_sets`, then no include on HTTP 400. |
+| `users` | `users.ndjson`; `user_identities.ndjson` when sideloaded. Falls back without identities on HTTP 400. |
+| `organizations` | `organizations.ndjson` |
+| `ticket_events` | `ticket_events.ndjson`, derived `comments.ndjson` and `attachments.ndjson`. Sends `support_type_scope=all` on every request. Attachments contain metadata only; content URLs are never downloaded. Boundary event IDs are deduplicated across adjacent pages, including after resume. |
+| `ticket_metric_events` | `ticket_metric_events.ndjson` |
+| `side_conversation_events` | Raw incremental events in `side_conversation_events.ndjson`, with boundary deduplication and resume. Referenced conversations are fetched once per `(ticket_id, side_conversation_id)` in the snapshot and written to `side_conversations.ndjson` with `ticket_id`. Enabled by default; 403/404 marks the stream unavailable (`skipped`) and continues. |
+| `groups` | `groups.ndjson` |
+| `group_memberships` | `group_memberships.ndjson` |
+| `organization_memberships` | `organization_memberships.ndjson` |
+| `satisfaction_ratings` | `satisfaction_ratings.ndjson` |
+| `custom_object_records` | `custom_object_records.ndjson`, with `custom_object_key` on every record. Lists objects and cursor-pages all their undeleted records with `page[size]=100`. Always exports in full, including with `--since`; resume continues the saved object and record cursor. |
+| `config` | Existing account-configuration JSON export under `config/`, with its own resource manifest. |
+
+These snapshots reflect what Zendesk makes available during the run; account
+changes during a long export are not an atomic database backup. NDJSON stores
+one raw object per line, plus derived comment and attachment metadata. The top-level
+`manifest.json` records the current user, effective includes, rates, per-stream
+status, requests, pages, file byte/line counts, next position and timings. It is
+replaced atomically after each page. Resume truncates unfinished NDJSON files to
+the recorded byte offsets before continuing, removing partial/uncommitted pages.
+Configuration progress is saved per resource. Completed and skipped streams are
+left intact; failed streams are retried. A 403/404 skips a stream with a reason;
+other failures are recorded and the remaining streams continue. A 401 aborts only
+when `/users/me` also rejects the token.
+
+After the client's own retry policy is exhausted, the exporter waits 60 seconds
+on HTTP 429 and retries up to ten times; server/network failures wait 30 seconds
+and retry up to five times. Pacing applies between attempts. Pagination links
+are followed only inside the account API. Only GET requests are issued.
+
+The opt-in admin tool `export_data` provides the same snapshot export on a stdio
+server configured with `--export-dir`. It accepts `since`, `streams` and `resume`,
+returns immediately after reserving the snapshot, and runs in the server process.
+While an export is running, subsequent calls return that job's manifest progress
+instead of creating another job. Read `<snapshot>/manifest.json` for progress
+without invoking a tool. Stopping the server interrupts the export; restart and
+supply the returned folder name as `resume`. The tool remains available on
+`--read-only` servers because it only reads Zendesk, though its local file writes
+are reflected by `readOnlyHint: false`.
+
+### Golden observations (`record-goldens`)
+
+After `export-data`, record how Zendesk behaves against that data snapshot for
+characterization tests of a replacement system:
+
+```bash
+zendesk-mcp-server record-goldens acme --export-dir /absolute/local/backups \
+  --data-snapshot acme-data-2026-01-01T00-00-00-000Z
+zendesk-mcp-server record-goldens acme --export-dir /absolute/local/backups \
+  --data-snapshot acme-data-2026-01-01T00-00-00-000Z \
+  --only views --only macros --view-row-cap 2000 --macro-sample 25
+```
+
+The input folder stays inside `--export-dir`. Tickets are read line by line;
+when an ID repeats, its last version determines sampling and search statistics.
+Deleted tickets are excluded. Samples round-robin across deterministic strata
+ordered by size and key, with descending ticket IDs inside each stratum.
+
+The new `<subdomain>-goldens-<UTC timestamp>` folder contains:
+
+| Stage | Observations |
+| ----- | ------------ |
+| `context` | `context.json`: the complete `/users/me` response, all group memberships and recording time. Views using current-user conditions depend on this identity. |
+| `views` | Active shared views (unrestricted or Group restriction), live definitions, raw counts, every ordered ticket ID and execute columns/groups/rows in `views/<id>.json`; `views/index.json` records statuses and counts. |
+| `macros` | Active macros, generic apply responses and ticket-specific previews in `macros/<id>.json`; `macros/index.json` and `macros/sample.json` describe outcomes and sampled ticket strata. Apply endpoints preview changes without modifying tickets. |
+| `slas` | `slas.ndjson` contains ticket fields, SLAs and matched metric sideloads from batches of up to 100 tickets. `audits.ndjson` contains all audit pages per sampled ticket; `slas/sample.json` records strata. Unrecognized metric-event sideload shapes are preserved raw. |
+| `search` | `search.json` records counts and ordered first-page IDs by relevance and descending creation date, with query origins and recording times. Generated searches use non-deleted latest tickets, names/emails from the snapshot, top subject terms and dates relative to the data snapshot's start time. |
+
+`--only` repeats to select stages; the default runs the stages above in order.
+`--view-row-cap` defaults to 2000 (execute rows only; ticket IDs are uncapped).
+`--macro-sample` defaults to 25, stratified by status, form and brand.
+`--sla-sample` defaults to 500: 90% non-closed and 10% closed, stratified by status,
+priority, group and form. The closed allocation is rounded down; unavailable
+strata produce a smaller sample. Caps and sample sizes accept nonnegative integers.
+
+`--queries /absolute/path/queries.json` replaces generated searches with a JSON
+array of unique `{ "id": "open", "query": "type:ticket status:open" }` entries.
+Each query must begin with `type:ticket `. Query text contains names/emails and
+is written only to observation files, never info-level progress logs.
+
+Authentication, sign-in polling, `--rate`, `--log-level`, stderr progress, stdout
+JSON summary and exit codes follow `export-data`. Only GET requests are used.
+Each view, macro and page checkpoints the atomic manifest. Errors on individual
+views/previews/queries are recorded and other observations continue. A 403/404
+skips an inaccessible stage with a reason; other stage failures are resumable.
+A 401 aborts only if `/users/me` also rejects the token.
+
+Resume with `--resume <golden-folder-name>` and the same `--data-snapshot` and
+recording user. Completed stages and written view/macro files are skipped;
+unfinished SLA/audit output truncates to its committed offsets. Supplied sample
+options must match the original manifest. Folder names cannot contain separators
+or `..`; snapshot directories and input files must not be symlinks.
+
+The opt-in admin tool `record_goldens` accepts required `data_snapshot`, optional
+`stages` and `resume`. It shares the background-job reservation with `export_data`
+for the same account/export directory, returns immediately and reports the
+running job on repeated calls. Server shutdown interrupts it; resume after restart.
+It remains available with `--read-only`, with `readOnlyHint: false` for its local
+writes. Use the CLI for custom sample sizes or query files.

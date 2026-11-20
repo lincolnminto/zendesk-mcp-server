@@ -114,6 +114,17 @@ export const createTokenStore = (
       ? Date.now() >= t.expiresAt - EXPIRY_SKEW_MS
       : t.refreshToken !== undefined && !probedUnknownExpiry;
 
+  // Another process may have rotated the grant since this cache was populated.
+  // Use the same scope guard as startup, and probe an adopted unknown-age token
+  // independently of any token previously refreshed by this process.
+  const adoptRotatedToken = (current: StoredToken): StoredToken | undefined => {
+    const loaded = loadUsableToken();
+    if (!loaded?.refreshToken || loaded.refreshToken === current.refreshToken) return undefined;
+    token = loaded;
+    probedUnknownExpiry = false;
+    return loaded;
+  };
+
   // Try to silently mint a fresh access token from the stored refresh token.
   // Resolves to the new access token, or `undefined` if there's nothing to
   // refresh / the refresh failed. On failure the on-demand path drops the dead
@@ -123,7 +134,10 @@ export const createTokenStore = (
   // a usable token and force needless re-auth.
   const tryRefresh = async (
     current: StoredToken,
-    { dropOnFailure = true }: { dropOnFailure?: boolean } = {},
+    {
+      dropOnFailure = true,
+      retryOnRotation = true,
+    }: { dropOnFailure?: boolean; retryOnRotation?: boolean } = {},
   ): Promise<string | undefined> => {
     if (!current.refreshToken) return undefined;
     try {
@@ -159,15 +173,39 @@ export const createTokenStore = (
       logger.warn('oauth_token_refresh_failed', {
         error: err instanceof Error ? err.message : String(err),
       });
-      // Refresh token expired/invalid → drop it so we fall back to a fresh flow.
-      // Skipped for the background keepalive, which must keep a still-valid token
-      // alive across a transient failure.
-      if (dropOnFailure) {
-        token = undefined;
-        clearPersistedToken(tokenPath, logger);
-      }
-      return undefined;
+      return recoverRefresh(current, dropOnFailure, retryOnRotation);
     }
+  };
+
+  const recoverRefresh = async (
+    current: StoredToken,
+    dropOnFailure: boolean,
+    retryOnRotation: boolean,
+  ): Promise<string | undefined> => {
+    const rotated = adoptRotatedToken(current);
+    if (rotated) {
+      if (!needsRefresh(rotated)) return rotated.accessToken;
+      // Bound recovery to one additional network attempt. Never delete a
+      // different process's record, even if that recovery attempt fails.
+      return retryOnRotation
+        ? tryRefresh(rotated, { dropOnFailure: false, retryOnRotation: false })
+        : undefined;
+    }
+    // Keepalive failures must preserve a potentially still-valid access token.
+    if (dropOnFailure) {
+      token = undefined;
+      clearPersistedToken(tokenPath, logger);
+    }
+    return undefined;
+  };
+
+  const refreshLatest = (
+    current: StoredToken,
+    options: { dropOnFailure?: boolean } = {},
+  ): Promise<string | undefined> => {
+    const adopted = adoptRotatedToken(current);
+    if (adopted && !needsRefresh(adopted)) return Promise.resolve(adopted.accessToken);
+    return tryRefresh(adopted ?? current, options);
   };
 
   const beginAuth = (): Promise<string> => {
@@ -235,7 +273,7 @@ export const createTokenStore = (
     const current = token;
     if (!current?.refreshToken) return undefined;
     if (refreshing === undefined) {
-      refreshing = tryRefresh(current).finally(() => {
+      refreshing = refreshLatest(current).finally(() => {
         refreshing = undefined;
       });
     }
@@ -306,7 +344,7 @@ export const createTokenStore = (
   // stdio-only: HTTP carries a per-session bearer and doesn't use this store.
   const scheduledRefresh = setInterval(() => {
     if (token?.refreshToken && !refreshing) {
-      refreshing = tryRefresh(token, { dropOnFailure: false }).finally(() => {
+      refreshing = refreshLatest(token, { dropOnFailure: false }).finally(() => {
         refreshing = undefined;
       });
     }

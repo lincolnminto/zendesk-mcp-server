@@ -12,7 +12,11 @@ const tools = createAllTools(ctx);
 // Read only from Zendesk, so --read-only keeps them (`readOnly`), but they write
 // on the caller's machine, so `readOnlyHint` is honestly false. Still never
 // destructive: what they write is always new.
-const LOCAL_WRITERS: ReadonlySet<string> = new Set(['export_account_config']);
+const LOCAL_WRITERS: ReadonlySet<string> = new Set([
+  'export_account_config',
+  'export_data',
+  'record_goldens',
+]);
 
 describe('tool annotation invariants', () => {
   it('every tool: readOnly matches annotations.readOnlyHint, except local writers', () => {

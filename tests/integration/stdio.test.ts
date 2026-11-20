@@ -86,6 +86,76 @@ describe('[stdio] export_account_config', () => {
     expect(tools.map((t) => t.name)).not.toContain('zendesk_admin');
   });
 
+  it.each(['all', 'namespace', 'single'] as const)(
+    'lists API token metadata through a read-only server in %s mode',
+    async (mode) => {
+      const pages: Array<string | null> = [];
+      mswServer.use(
+        http.get('https://testsubdomain.zendesk.com/api/v2/api_tokens', ({ request }) => {
+          const page = new URL(request.url).searchParams.get('page');
+          pages.push(page);
+          return HttpResponse.json({
+            api_tokens: [
+              {
+                id: page ? 2 : 1,
+                description: 'Integration',
+                active: true,
+                created_at: '2026-01-01T00:00:00Z',
+                updated_at: null,
+                last_used: page ? null : '2026-11-01T00:00:00Z',
+                token: 'synthetic-secret',
+                visible_token: 'synthetic-prefix',
+              },
+            ],
+            next_page: page ? null : 'https://testsubdomain.zendesk.com/api/v2/api_tokens?page=2',
+          });
+        }),
+      );
+
+      connected = await stdioHarness.connect(makeConfig({ mode, readOnly: true, exportDir: dir }));
+      const { tools } = await connected.client.listTools();
+      const name = {
+        all: 'list_api_tokens',
+        namespace: 'zendesk_admin',
+        single: 'zendesk',
+      }[mode];
+      expect(tools.find((tool) => tool.name === name)?.description).toContain('last usage time');
+      if (mode === 'all') {
+        expect(tools.find((tool) => tool.name === name)?.annotations?.readOnlyHint).toBe(true);
+      }
+      const result = await connected.client.callTool({
+        name,
+        arguments: mode === 'all' ? {} : { operation: 'list_api_tokens', params: {} },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(pages).toEqual([null, '2']);
+      const text = (result.content as Array<{ text?: string }>)[0]?.text ?? '';
+      expect(JSON.parse(text)).toMatchInlineSnapshot(`
+        {
+          "api_tokens": [
+            {
+              "active": true,
+              "created_at": "2026-01-01T00:00:00Z",
+              "description": "Integration",
+              "id": 1,
+              "last_used": "2026-11-01T00:00:00Z",
+              "updated_at": null,
+            },
+            {
+              "active": true,
+              "created_at": "2026-01-01T00:00:00Z",
+              "description": "Integration",
+              "id": 2,
+              "last_used": null,
+              "updated_at": null,
+            },
+          ],
+        }
+      `);
+    },
+  );
+
   it('exports through the admin proxy of a read-only server and writes the snapshot locally', async () => {
     mswServer.use(
       http.get('https://testsubdomain.zendesk.com/api/v2/triggers', () =>

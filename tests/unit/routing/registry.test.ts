@@ -73,6 +73,6 @@ describe('groupByNamespace', () => {
     expect(ticketCount).toBe(20); // 18 ticket tools + 1 search + 1 ticket relations
     expect(hcCount).toBe(29);
     expect(userCount).toBe(5);
-    expect(adminCount).toBe(1);
+    expect(adminCount).toBe(4);
   });
 });
