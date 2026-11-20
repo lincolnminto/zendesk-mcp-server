@@ -666,6 +666,43 @@ describe('additional data streams', () => {
     },
   );
 
+  it('lists custom object definitions without page[size], which Zendesk rejects there', async () => {
+    const opts = await options();
+    const requests: URL[] = [];
+    mswServer.use(
+      http.get(`${API}/custom_objects`, ({ request }) => {
+        const url = new URL(request.url);
+        requests.push(url);
+        if (url.searchParams.has('page[size]'))
+          return HttpResponse.json(
+            { error: { title: 'Atributo inválido', message: 'page must be an integer' } },
+            { status: 400 },
+          );
+        return HttpResponse.json({ custom_objects: [{ key: 'cars' }] });
+      }),
+      http.get(`${API}/custom_objects/:key/records`, ({ request }) => {
+        requests.push(new URL(request.url));
+        return HttpResponse.json({
+          custom_object_records: [{ id: 'r1', name: 'Invented record' }],
+          meta: { has_more: false },
+        });
+      }),
+    );
+    const result = await runDataExport({ ...opts, streams: ['custom_object_records'], since: 99 });
+    expect(result.manifest.streams.custom_object_records?.status).toBe('exported');
+    expect(
+      requests
+        .find((url) => url.pathname === '/api/v2/custom_objects')
+        ?.searchParams.has('page[size]'),
+    ).toBe(false);
+    expect(
+      requests.find((url) => url.pathname.endsWith('/records'))?.searchParams.get('page[size]'),
+    ).toBe('100');
+    expect(await lines(result.snapshot, 'custom_object_records.ndjson')).toEqual([
+      { id: 'r1', name: 'Invented record', custom_object_key: 'cars' },
+    ]);
+  });
+
   it('resumes custom record cursors across objects and definition pages without replaying committed pages', async () => {
     const opts = await options();
     const requests: URL[] = [];
@@ -711,10 +748,12 @@ describe('additional data streams', () => {
       '/api/v2/custom_objects',
       '/api/v2/custom_objects/devices/records',
     ]);
+    // Record pages take cursor pagination; List Custom Objects rejects page[size] with a 400.
     expect(
-      requests.every(
-        (url) =>
-          url.searchParams.get('page[size]') === '100' && !url.searchParams.has('start_time'),
+      requests.every((url) =>
+        url.pathname === '/api/v2/custom_objects'
+          ? !url.searchParams.has('page[size]')
+          : url.searchParams.get('page[size]') === '100' && !url.searchParams.has('start_time'),
       ),
     ).toBe(true);
     expect(await lines(result.snapshot, 'custom_object_records.ndjson')).toEqual([

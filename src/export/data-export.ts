@@ -115,7 +115,7 @@ const initialRequest = (name: DataStream, since: number): ApiRequest => ({
   path: streamPath(name),
   params: incremental(name)
     ? { start_time: String(since), ...incrementalPageSize(name), ...supportScope(name) }
-    : { 'page[size]': '100' },
+    : cursorPageSize(streamPath(name)),
 });
 const incrementalPageSize = (name: DataStream): Record<string, string> =>
   name === 'side_conversation_events' ? {} : { per_page: '1000' };
@@ -231,6 +231,10 @@ const responseKey = (name: DataStream): string =>
   name === 'side_conversation_events' ? 'events' : name;
 
 const recordPath = (key: string): string => `/custom_objects/${encodeURIComponent(key)}/records`;
+// List Custom Objects (GET /custom_objects) is not paginated and rejects page[size] with a 400
+// ("page must be an integer"); its records and every other list take cursor pagination.
+const cursorPageSize = (path: string): Record<string, string> =>
+  samePath(path, '/custom_objects') ? {} : { 'page[size]': '100' };
 const samePath = (path: string, expected: string): boolean =>
   path === expected || path === `${expected}.json`;
 const validRequest = (request: ApiRequest, paths: string[]): boolean =>
@@ -516,7 +520,7 @@ const cursorNext = (body: Body, current: ApiRequest, subdomain: string): ApiRequ
   }
   if (!samePath(next.path, current.path.replace(JSON_SUFFIX, '')))
     throw new Error('Invalid custom object pagination path');
-  const request = { ...next, params: { ...next.params, 'page[size]': '100' } };
+  const request = { ...next, params: { ...next.params, ...cursorPageSize(next.path) } };
   if (JSON.stringify(request) === JSON.stringify(current))
     throw new Error('Custom object pagination made no progress');
   return request;
@@ -572,7 +576,7 @@ const exportCustomObjectRecords = async (
     const current = state.position.request;
     const body = await get<Body>('standard', current.path, {
       ...current.params,
-      'page[size]': '100',
+      ...cursorPageSize(current.path),
     });
     const next = cursorNext(body, current, options.subdomain);
     const { values, position } = customObjectPage(body, state.position, next);
