@@ -1,3 +1,9 @@
+## [2.27.1](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.27.0...v2.27.1) (2026-11-20)
+
+### Bug Fixes
+
+* **export:** list custom object definitions without page[size] ([#9](https://github.com/lincolnminto/zendesk-mcp-server/issues/9)) ([0e9ad93](https://github.com/lincolnminto/zendesk-mcp-server/commit/0e9ad935835089b4b4b6467d4702e8ee619f5a4c))
+
 ## [2.27.0](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.26.0...v2.27.0) (2026-11-20)
 
 ### Features
