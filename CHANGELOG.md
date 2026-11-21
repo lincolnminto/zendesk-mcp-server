@@ -1,3 +1,9 @@
+## [2.29.1](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.29.0...v2.29.1) (2026-11-21)
+
+### Bug Fixes
+
+* **export:** skip past side event pages that keep answering 5xx ([#12](https://github.com/lincolnminto/zendesk-mcp-server/issues/12)) ([c4fc0ff](https://github.com/lincolnminto/zendesk-mcp-server/commit/c4fc0ff7fca3cdce42d271768d43cb7030084866))
+
 ## [2.29.0](https://github.com/lincolnminto/zendesk-mcp-server/compare/v2.28.0...v2.29.0) (2026-11-21)
 
 ### Features
