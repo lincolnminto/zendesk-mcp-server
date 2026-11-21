@@ -44,7 +44,8 @@ then calls the right tools on your behalf.
   [export directory](docs/configuration.md#zendesk_export_dir)).
 
 For resumable bulk account snapshots, see [the `export-data` subcommand](docs/configuration.md#bulk-data-export-export-data);
-to record how Zendesk behaves on that data, see [`record-goldens`](docs/configuration.md#golden-observations-record-goldens).
+to record how Zendesk behaves on that data, see [`record-goldens`](docs/configuration.md#golden-observations-record-goldens);
+to re-authorize a stored token with the scopes the server now requests, see [`login`](docs/configuration.md#re-authorize-login).
 
 ## Why this server
 
@@ -71,8 +72,8 @@ differently.
   into namespace proxies, or collapse everything into a single unified tool. You
   can also filter by namespace or down to read-only operations, so each context
   loads only the surface it needs (see [Tool surface](#tool-surface)). Read-only
-  over stdio also signs in with Zendesk's `read` scope, so Zendesk itself refuses
-  a write ([how](docs/configuration.md#read-only-all-the-way-to-zendesk)).
+  over stdio also signs in with Zendesk's read scopes only, so Zendesk itself
+  refuses a write ([how](docs/configuration.md#read-only-all-the-way-to-zendesk)).
 - Two deployment shapes, same auth story. Run it on your laptop as a stdio MCP
   server, or deploy it as a private remote MCP server reached over HTTP, with one
   Zendesk session per request and each client carrying its own user's token.
@@ -267,8 +268,9 @@ anchor, so you can deep-link a specific setting.
 
 ## Snapshot e goldens (pt-BR)
 
-Dois subcomandos de linha de comando, só com GET no Zendesk e o token de escopo
-`read`, para quem vai substituir o Zendesk e precisa compará-lo com o sistema novo:
+Dois subcomandos de linha de comando, só com GET no Zendesk e o token de escopos
+de leitura (`read side_conversations:read`), para quem vai substituir o Zendesk e
+precisa compará-lo com o sistema novo:
 
 - `zendesk-mcp-server export-data <subdominio> --export-dir <pasta-absoluta>`
   grava um snapshot completo da conta (tickets, usuários, organizações, grupos,
@@ -285,7 +287,13 @@ Dois subcomandos de linha de comando, só com GET no Zendesk e o token de escopo
   `side_conversations.ndjson`, com `ticket_id` e sem duplicá-las no snapshot.
   Ambos ficam ligados por padrão e podem ser selecionados com `--only <stream>`;
   contas sem acesso ao add-on de conversas paralelas registram o stream como
-  indisponível (`skipped`) no manifest e seguem com o export.
+  indisponível (`skipped`) no manifest e seguem com o export. Um 403 grava no
+  manifest o `error` e a `description` da resposta do Zendesk (`zendesk_error`) e
+  o caminho da requisição que falhou (`failed_path`); em
+  `side_conversation_events`, também uma dica (`hint`): o token pode não ter o
+  escopo `side_conversations:read`, que o `read` global não cobre. Uma conversa
+  ilegível (403/404, por exemplo num ticket excluído) não derruba o stream: os
+  eventos dela ficam e ela é listada em `unreadable_conversations`.
 - `zendesk-mcp-server record-goldens <subdominio> --export-dir <pasta-absoluta> --data-snapshot <pasta-do-export>`
   grava o comportamento do Zendesk sobre esse snapshot: visualizações
   compartilhadas ativas (contagem, ids em ordem, linhas), prévias de macros,
@@ -294,6 +302,14 @@ Dois subcomandos de linha de comando, só com GET no Zendesk e o token de escopo
 Os dois existem também como ferramentas MCP (`export_data`, `record_goldens`)
 quando o servidor sobe com `--export-dir`. Flags, arquivos gerados e retomada:
 [docs/configuration.md](docs/configuration.md#bulk-data-export-export-data).
+
+Depois de um 403 em conversas paralelas,
+`zendesk-mcp-server login <subdominio> --read-only` refaz a autorização OAuth no
+navegador com os escopos atuais e substitui o token salvo daquele modo (sem
+`--read-only`, o do servidor de leitura e escrita). Tokens anteriores continuam
+valendo para o resto, sem novo login forçado. O comando mostra onde salvou o
+token e o escopo concedido, nunca o token
+([detalhes](docs/configuration.md#re-authorize-login)).
 
 ## Troubleshooting
 

@@ -45,7 +45,7 @@ export const isAuthRequiredError = (err: unknown): err is AuthRequiredError =>
 
 // Compute the absolute expiry (epoch ms) from an OAuth `expires_in` (seconds),
 // or `undefined` for a non-expiring token.
-const expiryFrom = (expiresIn: number | undefined): number | undefined =>
+export const expiryFrom = (expiresIn: number | undefined): number | undefined =>
   typeof expiresIn === 'number' ? Date.now() + expiresIn * 1000 : undefined;
 
 export const createTokenStore = (
@@ -53,7 +53,7 @@ export const createTokenStore = (
     subdomain: string;
     oauthClientId: string;
     callbackPort?: number | undefined;
-    /** Sign in with the `read` scope only, and serve no token that lacks it. */
+    /** Sign in with read scopes only, and serve no token that can write. */
     readOnly?: boolean | undefined;
   },
   logger: Logger = silentLogger,

@@ -52,6 +52,9 @@ vi.mock('../../../src/auth/token-persistence', () => ({
 const { createTokenStore, isAuthRequiredError } = await import('../../../src/auth/token-store');
 
 const CONFIG = { subdomain: 'testsubdomain', oauthClientId: 'test_client' };
+// What each mode asks Zendesk for at sign-in (src/auth/oauth-scope.ts).
+const RW_SCOPE = 'read write side_conversations:read side_conversations:write';
+const RO_SCOPE = 'read side_conversations:read';
 const AUTH_URL = 'https://testsubdomain.zendesk.com/oauth/authorizations/new?client_id=test_client';
 
 // A started-auth result whose token promise the test controls.
@@ -646,17 +649,19 @@ describe('createTokenStore', () => {
 
       await store.getToken().catch(() => {});
       expect(startBrowserAuthMock).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'read write' }),
+        expect.objectContaining({ scope: RW_SCOPE }),
       );
       expect(resolveTokenPathMock).toHaveBeenCalledWith(CONFIG.subdomain, { readOnly: false });
     });
 
-    it('signs in with the read scope only, kept in its own token file', async () => {
+    it('signs in with read scopes only, kept in its own token file', async () => {
       startBrowserAuthMock.mockResolvedValue(deferredStarted().started);
       const store = createTokenStore(READ_ONLY);
 
       await store.getToken().catch(() => {});
-      expect(startBrowserAuthMock).toHaveBeenCalledWith(expect.objectContaining({ scope: 'read' }));
+      expect(startBrowserAuthMock).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: RO_SCOPE }),
+      );
       expect(resolveTokenPathMock).toHaveBeenCalledWith(CONFIG.subdomain, { readOnly: true });
     });
 
@@ -704,8 +709,57 @@ describe('createTokenStore', () => {
 
       await expect(store.getToken()).rejects.toThrow('authentication required');
       expect(refreshAccessTokenMock).not.toHaveBeenCalled();
-      expect(startBrowserAuthMock).toHaveBeenCalledWith(expect.objectContaining({ scope: 'read' }));
+      expect(startBrowserAuthMock).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: RO_SCOPE }),
+      );
       expect(logger.warn).toHaveBeenCalledWith('oauth_token_scope_rejected');
+    });
+
+    // Tokens signed in before the side-conversations scope was requested hold only
+    // `read` / `read write`. They must keep serving everything else without a
+    // forced sign-in, so a running session survives the upgrade; `login`
+    // re-authorizes when the missing scope matters.
+    it.each([
+      ['read-only', READ_ONLY, 'read'],
+      ['read-write', CONFIG, 'read write'],
+    ])(
+      'keeps serving a %s disk token granted before the side-conversations scope',
+      async (_mode, config, scope) => {
+        loadTokenMock.mockReturnValue({
+          accessToken: 'pre-upgrade',
+          refreshToken: 'r1',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+          scope,
+        });
+        const store = createTokenStore(config);
+
+        await expect(store.getToken()).resolves.toBe('pre-upgrade');
+        expect(startBrowserAuthMock).not.toHaveBeenCalled();
+        expect(clearTokenMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it('keeps refreshing a read-only token granted before the side-conversations scope', async () => {
+      loadTokenMock.mockReturnValue({
+        accessToken: 'old',
+        refreshToken: 'r1',
+        expiresAt: Date.now() - 1000,
+        scope: 'read',
+      });
+      refreshAccessTokenMock.mockResolvedValue({
+        access_token: 'refreshed',
+        refresh_token: 'r2',
+        expires_in: 3600,
+      });
+      const store = createTokenStore(READ_ONLY);
+
+      await expect(store.getToken()).resolves.toBe('refreshed');
+      expect(startBrowserAuthMock).not.toHaveBeenCalled();
+      expect(saveTokenMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ accessToken: 'refreshed', scope: 'read' }),
+        expect.anything(),
+      );
     });
 
     it('still reuses a scope-less disk token outside read-only mode', async () => {
@@ -746,7 +800,7 @@ describe('createTokenStore', () => {
       await expect(store.getToken()).resolves.toBe('ro-token');
       expect(saveTokenMock).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ accessToken: 'ro-token', scope: 'read' }),
+        expect.objectContaining({ accessToken: 'ro-token', scope: RO_SCOPE }),
         expect.anything(),
       );
     });
@@ -762,7 +816,7 @@ describe('createTokenStore', () => {
 
       expect(saveTokenMock).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ accessToken: 'rw-token', scope: 'read write' }),
+        expect.objectContaining({ accessToken: 'rw-token', scope: RW_SCOPE }),
         expect.anything(),
       );
     });

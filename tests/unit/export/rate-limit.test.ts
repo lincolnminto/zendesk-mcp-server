@@ -20,6 +20,25 @@ const fakeClock = () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('bulk export pacing', () => {
+  it('tells the caller the API path of every request, without the query', async () => {
+    const clock = fakeClock();
+    const paths: string[] = [];
+    mswServer.use(
+      http.get(`${API}/groups`, () => HttpResponse.json({ groups: [] })),
+      http.get(`${API}/users/me`, () => HttpResponse.json({ user: { id: 1 } })),
+    );
+    const get = createPacedGet(
+      'testsubdomain',
+      () => 'token',
+      {},
+      clock,
+      (path) => paths.push(path),
+    );
+    await get('standard', '/groups', { 'page[size]': '100' });
+    await get('standard', '/users/me');
+    expect(paths).toEqual(['/groups', '/users/me']);
+  });
+
   it('reserves independent buckets and paces each request including retry attempts', async () => {
     const clock = fakeClock();
     let count = 0;

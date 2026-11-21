@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { buildBasicAuthHeader } from './auth/api-token';
+import { runLoginCli } from './auth/login';
 import { createTokenStore } from './auth/token-store';
 import type { Config } from './config';
 import { loadConfig } from './config';
@@ -67,6 +68,10 @@ const main = async (): Promise<void> => {
   }
   if (process.argv[2] === 'export-data') {
     process.exitCode = await runExportCli(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === 'login') {
+    process.exitCode = await runLoginCli(process.argv.slice(3));
     return;
   }
   const config = loadConfig();

@@ -23,7 +23,7 @@ Options:
                           users, admin (admin exists only with --export-dir)
   --tool <name>           Filter by tool name (repeatable, forces --mode all)
   --read-only             Only expose read operations (stdio OAuth: also sign
-                          in with Zendesk's read scope only)
+                          in with Zendesk's read scopes only)
   --no-topology           Disable the Help Center structural context
                           (instructions + zendesk-hc://topology resource)
   --no-promoted-articles  Disable the promoted-article PRE-LISTING (the
@@ -55,14 +55,31 @@ Options:
 
 ### Read-only all the way to Zendesk
 
-Over stdio with OAuth, `--read-only` also signs in with Zendesk's `read` scope
-instead of `read write`, so Zendesk itself rejects any write made with the token,
-not just the write tools this server knows about. The read-scoped token lives in
+Over stdio with OAuth, `--read-only` also signs in with read scopes only
+(`read side_conversations:read`) instead of the read-write set, so Zendesk itself
+rejects any write made with the token, not just the write tools this server knows
+about. The read-scoped token lives in
 its own file (`<subdomain>.read.json`, next to the read-write `<subdomain>.json`),
 so a read-only and a read-write server on the same subdomain each keep their own
 sign-in. A read-only server refuses any token it cannot prove is read-scoped,
 such as one persisted by an older version or a read-write file reached through
 [`ZENDESK_TOKEN_FILE`](#zendesk_token_file), and signs in afresh instead.
+
+### OAuth scopes
+
+| Mode | Requested scope |
+| ---- | --------------- |
+| default (read-write) | `read write side_conversations:read side_conversations:write` |
+| `--read-only` | `read side_conversations:read` |
+
+Side conversations sit outside the global `read` and `write` scopes: the
+[Side Conversations API reference](https://developer.zendesk.com/api-reference/ticketing/side_conversation/side_conversation/)
+lists `side_conversations:read` and `side_conversations:write` as the scopes its
+endpoints accept, and a token holding only `read` gets HTTP 403 there (the
+`side_conversation_events` stream of [`export-data`](#bulk-data-export-export-data)).
+A token signed in before these scopes were requested keeps working for everything
+else, so no running session is forced to sign in again; re-authorize it with
+[`login`](#re-authorize-login) when you need side conversations.
 
 The scope cannot narrow two credentials the server does not mint: a static API
 token ([`docs/api-token-stdio.md`](api-token-stdio.md)) always carries its
@@ -333,6 +350,28 @@ Hard cap on the number of article pages scanned to find promoted ("featured") ar
 
 ← Back to the [README](../README.md).
 
+## Re-authorize (`login`)
+
+The server signs in lazily, on the first tool call without a usable token, and
+then reuses that token. To give an existing token a scope added since it was
+granted, or to switch accounts, sign in again explicitly:
+
+```bash
+zendesk-mcp-server login acme               # the read-write server's token
+zendesk-mcp-server login acme --read-only   # the read-only server's and export-data's token
+```
+
+`login` always runs the browser OAuth flow with the scope the server now
+requests for that mode (see [OAuth scopes](#oauth-scopes)) and replaces the
+stored token in the file that mode uses (`<subdomain>.json`, `<subdomain>.read.json`,
+or [`ZENDESK_TOKEN_FILE`](#zendesk_token_file)). It reads the same
+[`ZENDESK_OAUTH_CLIENT_ID`](#zendesk_oauth_client_id) and callback port as the
+server, and also takes `--callback-port` and `--log-level`. It prints the token
+file path and the scope Zendesk granted, never the token, and warns when the
+grant lacks `side_conversations:read`. A read-only login refuses a grant that can
+write and saves nothing. Restart running servers on that subdomain to use the new
+grant right away.
+
 ## Bulk data export (`export-data`)
 
 Use the standalone subcommand for long account snapshots without starting an MCP
@@ -372,7 +411,7 @@ Streams run sequentially in this order:
 | `organizations` | `organizations.ndjson` |
 | `ticket_events` | `ticket_events.ndjson`, derived `comments.ndjson` and `attachments.ndjson`. Sends `support_type_scope=all` on every request. Attachments contain metadata only; content URLs are never downloaded. Boundary event IDs are deduplicated across adjacent pages, including after resume. |
 | `ticket_metric_events` | `ticket_metric_events.ndjson` |
-| `side_conversation_events` | Raw incremental events in `side_conversation_events.ndjson`, with boundary deduplication and resume. Referenced conversations are fetched once per `(ticket_id, side_conversation_id)` in the snapshot and written to `side_conversations.ndjson` with `ticket_id`. Enabled by default; 403/404 marks the stream unavailable (`skipped`) and continues. |
+| `side_conversation_events` | Raw incremental events in `side_conversation_events.ndjson`, with boundary deduplication and resume. Referenced conversations are fetched once per `(ticket_id, side_conversation_id)` in the snapshot and written to `side_conversations.ndjson` with `ticket_id`. Enabled by default; 403/404 on the events marks the stream unavailable (`skipped`) and continues. A 403/404 on one conversation's lookup (say, on a deleted ticket) only skips that conversation: its events stay, and the stream lists it in `unreadable_conversations` (`ticket_id`, `side_conversation_id`, `status`, `zendesk_error`), committed with its page and not looked up again on resume. Needs `side_conversations:read` on an OAuth token: a 403 that skips the stream adds a `hint` to re-authorize with [`login`](#re-authorize-login) and export the stream again. |
 | `groups` | `groups.ndjson` |
 | `group_memberships` | `group_memberships.ndjson` |
 | `organization_memberships` | `organization_memberships.ndjson` |
@@ -389,7 +428,12 @@ replaced atomically after each page. Resume truncates unfinished NDJSON files to
 the recorded byte offsets before continuing, removing partial/uncommitted pages.
 Configuration progress is saved per resource. Completed and skipped streams are
 left intact; failed streams are retried. A 403/404 skips a stream with a reason;
-other failures are recorded and the remaining streams continue. A 401 aborts only
+a 403 also records what Zendesk's response body said in `zendesk_error` (its
+`error` and `description`, or the first 500 characters of a body without them,
+`""` for an empty one; never request headers or the token) and, in
+`failed_path`, the API path of the request that got it (under `/api/v2`, without
+the query), whether the first page or a later one. Other failures are recorded
+and the remaining streams continue. A 401 aborts only
 when `/users/me` also rejects the token.
 
 After the client's own retry policy is exhausted, the exporter waits 60 seconds
