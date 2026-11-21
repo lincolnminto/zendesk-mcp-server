@@ -72,6 +72,8 @@ export interface StreamState {
   hint?: string;
   /** Side conversations whose lookup got 403/404; their events are still exported. */
   unreadable_conversations?: UnreadableConversation[];
+  /** Side event start times skipped past a persistent server error; see `fetchPage`. */
+  skipped_windows?: SkippedWindow[];
 }
 /**
  * The documented `error` / `description` strings of a Zendesk error body, or,
@@ -88,6 +90,16 @@ export interface UnreadableConversation {
   side_conversation_id: string;
   status: number;
   zendesk_error: ZendeskErrorBody;
+}
+/**
+ * Side events in `[from, to)` (epoch seconds) were not exported: a page starting
+ * at `from` kept answering `status` (5xx), and `to` is the first start time that
+ * answered again.
+ */
+export interface SkippedWindow {
+  from: number;
+  to: number;
+  status: number;
 }
 interface RequestState {
   current: StreamState | undefined;
@@ -114,6 +126,11 @@ export interface DataExportOptions {
   rates?: Partial<Record<Bucket, number>>;
   deps?: ExportDeps;
   onProgress?: (manifest: DataManifest, snapshot: string) => void;
+  /**
+   * Most seconds of side events to skip past a page that keeps answering 5xx
+   * before the stream fails; 0 never skips. Default 86,400 (24 h).
+   */
+  sideEventsMaxSkip?: number;
 }
 const EPOCH = /^\d+$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:T.*)?$/;
@@ -303,7 +320,23 @@ const validateOptions = (options: DataExportOptions): void => {
     throw new Error('Select one or more supported streams');
   resolveRates(options.rates);
   parseSince(options.since);
+  validateMaxSkip(options.sideEventsMaxSkip);
 };
+
+export const DEFAULT_SIDE_EVENTS_MAX_SKIP = 86_400;
+export const validateMaxSkip = (value: number | undefined): number => {
+  const seconds = value ?? DEFAULT_SIDE_EVENTS_MAX_SKIP;
+  if (!Number.isSafeInteger(seconds) || seconds < 0)
+    throw new Error('The side event skip limit must be a nonnegative number of seconds');
+  return seconds;
+};
+
+// An optional manifest list (unreadable conversations, skipped windows) must be
+// a list of records, or resume would trip over it mid-stream.
+const optionalRecords = (value: unknown): boolean =>
+  value === undefined ||
+  (Array.isArray(value) &&
+    value.every((entry) => entry && typeof entry === 'object' && !Array.isArray(entry)));
 
 const validateManifest = (manifest: DataManifest, options: DataExportOptions): void => {
   if (
@@ -326,13 +359,10 @@ const validateManifest = (manifest: DataManifest, options: DataExportOptions): v
     )
       throw new Error('Invalid stream checkpoint');
     validatePosition(name as DataStream, state.position);
-    const unreadable: unknown = state.unreadable_conversations;
-    if (
-      unreadable !== undefined &&
-      (!Array.isArray(unreadable) ||
-        unreadable.some((entry) => !entry || typeof entry !== 'object' || Array.isArray(entry)))
-    )
+    if (!optionalRecords(state.unreadable_conversations))
       throw new Error('Invalid unreadable conversations checkpoint');
+    if (!optionalRecords(state.skipped_windows))
+      throw new Error('Invalid skipped windows checkpoint');
     if (Object.keys(state.files).some((file) => !allowedFiles(name as DataStream).includes(file)))
       throw new Error('Invalid checkpoint filename');
   }
@@ -436,6 +466,77 @@ const getPage = async (
   }
 };
 
+// Step sizes, in seconds, of the probes past a failing side event page: doubling
+// from 1 s so a short failure costs little data, capped so a long one does not
+// leap a day at once.
+const SKIP_STEP_CAP = 3600;
+// Zendesk asks incremental exports to start more than a minute in the past.
+const INCREMENTAL_LAG = 60;
+
+const isServerError = (err: unknown): err is ZendeskApiError =>
+  err instanceof ZendeskApiError && err.status >= 500;
+
+/**
+ * Fetch a page; for side events, survive a start time Zendesk keeps answering
+ * with a 5xx after every retry (seen in production on one page, across runs).
+ * Probe later start times, 1 s on and then in doubling steps up to an hour, and
+ * resume from the first that answers, reporting the skipped window. Give up with
+ * the original error once the window would pass the skip limit or reach the
+ * last minute.
+ */
+const fetchPage = async (
+  name: DataStream,
+  state: StreamState,
+  request: ApiRequest,
+  get: ReturnType<typeof createPacedGet>,
+  options: DataExportOptions,
+): Promise<{ body: Body; request: ApiRequest; skipped?: SkippedWindow }> => {
+  try {
+    return { body: await getPage(name, state, request, get, options.subdomain), request };
+  } catch (err) {
+    if (name !== 'side_conversation_events' || !isServerError(err)) throw err;
+    const from = Number(request.params['start_time']);
+    const limit = from + validateMaxSkip(options.sideEventsMaxSkip);
+    const latest = Math.floor((options.deps ?? defaultDeps).now() / 1000) - INCREMENTAL_LAG;
+    let step = 1;
+    for (let to = from + step; to <= limit && to <= latest; to += step) {
+      const probe = { path: request.path, params: { ...request.params, start_time: String(to) } };
+      try {
+        const body = await getPage(name, state, probe, get, options.subdomain);
+        return { body, request: probe, skipped: { from, to, status: err.status } };
+      } catch (probeError) {
+        if (!isServerError(probeError)) throw probeError;
+      }
+      step = Math.min(step * 2, SKIP_STEP_CAP);
+    }
+    throw err;
+  }
+};
+
+// Do not publish new offsets until every file in this page has been flushed.
+// What the page noted on the side is committed with it: an uncommitted page is
+// retried, its conversation lookups and skip probes included.
+const commitPage = async (
+  snapshot: string,
+  state: StreamState,
+  page: {
+    files: Record<string, unknown[]>;
+    unreadable: UnreadableConversation[];
+    skipped?: SkippedWindow | undefined;
+  },
+): Promise<void> => {
+  const updated = { ...state.files };
+  for (const [file, values] of Object.entries(page.files))
+    updated[file] = await appendPage(snapshot, file, values, state.files[file]);
+  state.files = updated;
+  if (page.unreadable.length)
+    state.unreadable_conversations = [
+      ...(state.unreadable_conversations ?? []),
+      ...page.unreadable,
+    ];
+  if (page.skipped) state.skipped_windows = [...(state.skipped_windows ?? []), page.skipped];
+};
+
 const exportPages = async (
   name: DataStream,
   state: StreamState,
@@ -450,8 +551,8 @@ const exportPages = async (
   await truncateFiles(snapshot, recorded);
   const conversations = await knownConversations(name, snapshot, state);
   while (state.position.request) {
-    const current = state.position.request;
-    const body = await getPage(name, state, current, get, options.subdomain);
+    const fetched = await fetchPage(name, state, state.position.request, get, options);
+    const { body, request: current } = fetched;
     const raw = rows(body, responseKey(name));
     const previous = new Set(state.position.previous_ids);
     // Only time-based pages overlap at their boundary timestamp. A cursor stream
@@ -475,15 +576,8 @@ const exportPages = async (
       .filter((id): id is string | number => typeof id === 'number' || typeof id === 'string');
     if (next && JSON.stringify(next) === JSON.stringify(current) && items.length === 0)
       throw new Error('Incremental pagination made no progress');
-    const { files, unreadable } = await pageOutput(name, body, items, conversations, get);
-    // Do not publish new offsets until every file in this page has been flushed.
-    const updated = { ...state.files };
-    for (const [file, values] of Object.entries(files))
-      updated[file] = await appendPage(snapshot, file, values, state.files[file]);
-    state.files = updated;
-    // Committed with the page: an uncommitted page is retried, lookups included.
-    if (unreadable.length)
-      state.unreadable_conversations = [...(state.unreadable_conversations ?? []), ...unreadable];
+    const output = await pageOutput(name, body, items, conversations, get);
+    await commitPage(snapshot, state, { ...output, skipped: fetched.skipped });
     state.position = { request: next, previous_ids: ids };
     state.pages += 1;
     state.duration_ms = (options.deps ?? defaultDeps).now() - Date.parse(state.started_at);

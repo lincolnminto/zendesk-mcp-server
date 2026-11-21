@@ -4,17 +4,28 @@ import { buildBasicAuthHeader } from '../auth/api-token';
 import { createTokenStore, isAuthRequiredError } from '../auth/token-store';
 import { LogLevel, loadConfig } from '../config';
 import { createLogger } from '../utils/logger';
-import { DATA_STREAMS, type DataStream, parseSince, runDataExport } from './data-export';
+import {
+  DATA_STREAMS,
+  type DataStream,
+  parseSince,
+  runDataExport,
+  validateMaxSkip,
+} from './data-export';
 import { GOLDEN_STAGES, type GoldenStage, runGoldens } from './goldens';
 import { validateResumeName } from './ndjson';
 import { defaultDeps, type ExportDeps, resolveRates } from './rate-limit';
 
 const USAGE =
-  'Usage: zendesk-mcp-server export-data <subdomain> --export-dir <absolute-local-path> [--since <ISO|epoch>] [--only <stream>]... [--resume <folder>] [--rate <requests/min>] [--log-level <debug|info|warn|error>]';
+  'Usage: zendesk-mcp-server export-data <subdomain> --export-dir <absolute-local-path> [--since <ISO|epoch>] [--only <stream>]... [--resume <folder>] [--rate <requests/min>] [--side-events-max-skip <seconds>] [--log-level <debug|info|warn|error>]';
 const GOLDENS_USAGE =
   'Usage: zendesk-mcp-server record-goldens <subdomain> --export-dir <absolute-local-path> --data-snapshot <folder-name> [--only <stage>]... [--view-row-cap <rows>] [--macro-sample <tickets>] [--sla-sample <tickets>] [--queries <absolute-json-path>] [--resume <folder>] [--rate <requests/min>] [--log-level <debug|info|warn|error>]';
 const SUBDOMAIN = /^[a-z0-9][a-z0-9-]*$/i;
 const NETWORK_PATH = /^[\\/]{2}/;
+const DIGITS = /^\d+$/;
+const parseMaxSkip = (value: string): number => {
+  if (!DIGITS.test(value)) throw new Error('--side-events-max-skip takes whole seconds');
+  return validateMaxSkip(Number(value));
+};
 const parseStrictOptions = (args: string[], goldens = false) => {
   try {
     const parsed = parseArgs({
@@ -32,13 +43,15 @@ const parseStrictOptions = (args: string[], goldens = false) => {
         only: { type: 'string', multiple: true },
         resume: { type: 'string' },
         rate: { type: 'string' },
+        'side-events-max-skip': { type: 'string' },
         'log-level': { type: 'string' },
       },
     });
     const goldenFlags = ['data-snapshot', 'view-row-cap', 'macro-sample', 'sla-sample', 'queries'];
+    const exportFlags = ['since', 'side-events-max-skip'];
     if (
       Object.keys(parsed.values).some((key) =>
-        goldens ? key === 'since' : goldenFlags.includes(key),
+        goldens ? exportFlags.includes(key) : goldenFlags.includes(key),
       )
     )
       throw new Error('Unsupported flag');
@@ -68,10 +81,12 @@ export const parseExportArgs = (args: string[]) => {
   if (values.since !== undefined) parseSince(values.since);
   if (values.resume !== undefined) validateResumeName(values.resume);
   const logLevel = LogLevel.parse(values['log-level'] ?? 'info');
+  const maxSkip = values['side-events-max-skip'];
   return {
     subdomain,
     exportDir,
     ...(values.since !== undefined ? { since: values.since } : {}),
+    ...(maxSkip !== undefined ? { sideEventsMaxSkip: parseMaxSkip(maxSkip) } : {}),
     ...(values.only ? { streams: values.only as DataStream[] } : {}),
     ...(values.resume !== undefined ? { resume: values.resume } : {}),
     rates: { standard },
