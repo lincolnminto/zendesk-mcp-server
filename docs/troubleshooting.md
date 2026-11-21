@@ -125,6 +125,14 @@ A 403 or 404 on a single conversation (say, one on a deleted ticket) does not
 skip the stream: its events are kept and the conversation is listed in
 `unreadable_conversations` with the status and what Zendesk said.
 
+## `side_conversation_events` keeps failing with a 500 on one page
+
+Zendesk can answer one side-event `start_time` with a 5xx on every retry and in
+every run. The exporter then skips past it and lists the lost time range in
+`skipped_windows`; it fails only if no start time answers within
+`--side-events-max-skip` (24 h by default). How the probing works:
+[bulk data export](configuration.md#bulk-data-export-export-data).
+
 ## My HTTP session disappears after a pause, even though the stream stayed up
 
 Expected, and not an error: stream liveness and session lifetime are separate

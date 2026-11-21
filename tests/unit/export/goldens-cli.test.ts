@@ -35,6 +35,7 @@ it('parses golden stage selection, sample sizes and paths before auth', () => {
     ['--queries', 'relative'],
     ['--resume', '../bad'],
     ['--since', '0'],
+    ['--side-events-max-skip', '60'],
   ])
     expect(() => parseGoldensArgs([...base, ...extra])).toThrow();
   expect(() => parseGoldensArgs(['acme', '--export-dir', '/tmp/export'])).toThrow();

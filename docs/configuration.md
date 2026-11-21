@@ -400,6 +400,7 @@ Unknown flags and invalid arguments fail before authentication or network access
 | `--only <stream>` | Repeat to select streams; omit for all streams below. |
 | `--resume <snapshot-folder-name>` | Resume inside the same export directory. Folder names cannot contain separators or `..`. The original start time is preserved; any supplied `--since` must match. Only originally selected streams can be resumed. |
 | `--rate <requests-per-minute>` | Standard request bucket, default 300. All incremental endpoints share a separate bucket of 10 requests/minute. |
+| `--side-events-max-skip <seconds>` | Most side-event time to skip past a page that keeps answering 5xx before `side_conversation_events` fails, default 86400 (24 h); `0` never skips. See below. |
 | `--log-level <debug\|info\|warn\|error>` | Stderr progress verbosity, default `info`. Authorization URLs remain visible at every level. |
 
 Streams run sequentially in this order:
@@ -411,7 +412,7 @@ Streams run sequentially in this order:
 | `organizations` | `organizations.ndjson` |
 | `ticket_events` | `ticket_events.ndjson`, derived `comments.ndjson` and `attachments.ndjson`. Sends `support_type_scope=all` on every request. Attachments contain metadata only; content URLs are never downloaded. Boundary event IDs are deduplicated across adjacent pages, including after resume. |
 | `ticket_metric_events` | `ticket_metric_events.ndjson` |
-| `side_conversation_events` | Raw incremental events in `side_conversation_events.ndjson`, with boundary deduplication and resume. Referenced conversations are fetched once per `(ticket_id, side_conversation_id)` in the snapshot and written to `side_conversations.ndjson` with `ticket_id`. Enabled by default; 403/404 on the events marks the stream unavailable (`skipped`) and continues. A 403/404 on one conversation's lookup (say, on a deleted ticket) only skips that conversation: its events stay, and the stream lists it in `unreadable_conversations` (`ticket_id`, `side_conversation_id`, `status`, `zendesk_error`), committed with its page and not looked up again on resume. Needs `side_conversations:read` on an OAuth token: a 403 that skips the stream adds a `hint` to re-authorize with [`login`](#re-authorize-login) and export the stream again. |
+| `side_conversation_events` | Raw incremental events in `side_conversation_events.ndjson`, with boundary deduplication and resume. Referenced conversations are fetched once per `(ticket_id, side_conversation_id)` in the snapshot and written to `side_conversations.ndjson` with `ticket_id`. Enabled by default; 403/404 on the events marks the stream unavailable (`skipped`) and continues. A 403/404 on one conversation's lookup (say, on a deleted ticket) only skips that conversation: its events stay, and the stream lists it in `unreadable_conversations` (`ticket_id`, `side_conversation_id`, `status`, `zendesk_error`), committed with its page and not looked up again on resume. Needs `side_conversations:read` on an OAuth token: a 403 that skips the stream adds a `hint` to re-authorize with [`login`](#re-authorize-login) and export the stream again. An events page that still answers 5xx after every retry is skipped past and listed in `skipped_windows` (see below). |
 | `groups` | `groups.ndjson` |
 | `group_memberships` | `group_memberships.ndjson` |
 | `organization_memberships` | `organization_memberships.ndjson` |
@@ -440,6 +441,22 @@ After the client's own retry policy is exhausted, the exporter waits 60 seconds
 on HTTP 429 and retries up to ten times; server/network failures wait 30 seconds
 and retry up to five times. Pacing applies between attempts. Pagination links
 are followed only inside the account API. Only GET requests are issued.
+
+Zendesk can answer one side-event `start_time` with a 5xx on every attempt, in
+every run (seen in production after 150 good pages), which would block
+`side_conversation_events` for good. When an events page still fails with a 5xx
+after all those retries, the exporter probes later start times: 1 second past
+the failing one, then in steps that double up to one hour (+1, +3, +7, ... s).
+Each probe gets the same retries. The first start time that answers becomes the
+page, and the stream's manifest entry gets `skipped_windows: [{ from, to, status }]`:
+side events created in `[from, to)` (Unix epoch seconds) were not exported, and
+`status` is the failing page's HTTP status. A window is committed with the page
+that follows it, so resume neither loses nor probes it again. Probing stops, and
+the stream fails as any other 5xx does, when the next probe would go past
+`--side-events-max-skip` seconds after the failing start time (the `export_data`
+tool always uses the 24 h default) or into the last minute, which Zendesk asks
+incremental exports to stay out of. A failing probe costs the full retry cycle,
+so a long window takes a while to cross. Other streams still fail on a 5xx.
 
 The opt-in admin tool `export_data` provides the same snapshot export on a stdio
 server configured with `--export-dir`. It accepts `since`, `streams` and `resume`,

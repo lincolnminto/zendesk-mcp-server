@@ -2,10 +2,16 @@ import { appendFile, mkdtemp, readdir, readFile, symlink, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { HttpResponse, http } from 'msw';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { defaultRetryDeps } from '../../../src/client/retry';
 import { CONFIG_RESOURCES } from '../../../src/export/account-config';
 import { parseExportArgs } from '../../../src/export/cli';
-import { parseSince, runDataExport, zendeskErrorBody } from '../../../src/export/data-export';
+import {
+  DEFAULT_SIDE_EVENTS_MAX_SKIP,
+  parseSince,
+  runDataExport,
+  zendeskErrorBody,
+} from '../../../src/export/data-export';
 import { mswServer } from '../../setup';
 
 const API = 'https://testsubdomain.zendesk.com/api/v2';
@@ -236,6 +242,17 @@ describe('export arguments', () => {
       ['acme', '--export-dir', '/tmp/a', '--rate', '0'],
     ])
       expect(() => parseExportArgs(args)).toThrow();
+  });
+
+  it('takes the side event skip limit in whole seconds', () => {
+    const base = ['acme', '--export-dir', '/tmp/export'];
+    expect(parseExportArgs(base)).not.toHaveProperty('sideEventsMaxSkip');
+    expect(parseExportArgs([...base, '--side-events-max-skip', '3600']).sideEventsMaxSkip).toBe(
+      3600,
+    );
+    expect(parseExportArgs([...base, '--side-events-max-skip', '0']).sideEventsMaxSkip).toBe(0);
+    for (const value of ['-1', '1.5', 'abc', '', '1e3', String(Number.MAX_SAFE_INTEGER + 2)])
+      expect(() => parseExportArgs([...base, '--side-events-max-skip', value])).toThrow();
   });
 });
 
@@ -1274,4 +1291,267 @@ it('follows short side event pages until next_page is null without assuming a pa
   expect(pages).toBe(2);
   expect(lookups).toBe(1);
   expect(await lines(result.snapshot, 'side_conversation_events.ndjson')).toHaveLength(2);
+});
+
+describe('side event windows that keep answering 5xx', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const SERVER_ERROR = { status: 500, error: 'Internal Server Error' };
+  // Fast pacing and no exporter waits keep the fake clock where the test put it.
+  const skipOptions = async () => {
+    const base = await options();
+    return {
+      ...base,
+      rates: { incremental: 6_000_000, standard: 6_000_000 },
+      deps: { ...base.deps, errorWaitMs: 0 },
+    };
+  };
+  const event = (id: string) => ({ id, ticket_id: 8, side_conversation_id: 'sc1' });
+  // Pages: start_time 3 answers e1 and points at 100; `answer(start)` decides the rest.
+  const sideEvents = (answer: (start: number) => Response | undefined, starts: number[]) =>
+    http.get(`${API}/tickets/side_conversations/events`, ({ request }) => {
+      const start = Number(new URL(request.url).searchParams.get('start_time'));
+      if (starts.at(-1) !== start) starts.push(start);
+      if (start === 3)
+        return HttpResponse.json({
+          events: [event('e1')],
+          end_time: 100,
+          next_page: `${API}/tickets/side_conversations/events?start_time=100`,
+        });
+      return answer(start) ?? HttpResponse.json(SERVER_ERROR, { status: 500 });
+    });
+  const lookups = http.get(`${API}/tickets/8/side_conversations/sc1`, () =>
+    HttpResponse.json({ side_conversation: { id: 'sc1' } }),
+  );
+
+  it('skips past the failing start time in doubling steps, records the window and continues', async () => {
+    vi.spyOn(defaultRetryDeps, 'sleep').mockResolvedValue();
+    const opts = await skipOptions();
+    const starts: number[] = [];
+    mswServer.use(
+      sideEvents(
+        (start) =>
+          start === 107
+            ? HttpResponse.json({ events: [event('e2')], end_time: 107, end_of_stream: true })
+            : undefined,
+        starts,
+      ),
+      lookups,
+    );
+    const result = await runDataExport({
+      ...opts,
+      streams: ['side_conversation_events'],
+      since: 3,
+    });
+    const stream = result.manifest.streams.side_conversation_events;
+    expect(stream).toMatchObject({
+      status: 'exported',
+      pages: 2,
+      skipped_windows: [{ from: 100, to: 107, status: 500 }],
+    });
+    expect(stream).not.toHaveProperty('reason');
+    expect(starts).toEqual([3, 100, 101, 103, 107]);
+    expect(await lines(result.snapshot, 'side_conversation_events.ndjson')).toEqual([
+      event('e1'),
+      event('e2'),
+    ]);
+    const saved = JSON.parse(await readFile(join(result.snapshot, 'manifest.json'), 'utf8'));
+    expect(saved.streams.side_conversation_events.skipped_windows).toEqual([
+      { from: 100, to: 107, status: 500 },
+    ]);
+  });
+
+  it('caps the step at an hour and fails as before once the window passes the limit', async () => {
+    vi.spyOn(defaultRetryDeps, 'sleep').mockResolvedValue();
+    const opts = await skipOptions();
+    const starts: number[] = [];
+    mswServer.use(
+      sideEvents(() => undefined, starts),
+      lookups,
+    );
+    const result = await runDataExport({
+      ...opts,
+      streams: ['side_conversation_events'],
+      since: 3,
+      sideEventsMaxSkip: 12_000,
+    });
+    const stream = result.manifest.streams.side_conversation_events;
+    expect(stream).toMatchObject({ status: 'failed', pages: 1 });
+    expect(stream?.reason).toContain('Zendesk API error 500');
+    expect(stream).not.toHaveProperty('skipped_windows');
+    expect(stream?.position.request?.params['start_time']).toBe('100');
+    expect(starts.map((start) => start - 100)).toEqual([
+      -97, 0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095, 7695, 11295,
+    ]);
+  });
+
+  it('defaults the limit to a day', async () => {
+    vi.spyOn(defaultRetryDeps, 'sleep').mockResolvedValue();
+    const opts = await skipOptions();
+    const starts: number[] = [];
+    mswServer.use(
+      sideEvents(() => undefined, starts),
+      lookups,
+    );
+    await runDataExport({ ...opts, streams: ['side_conversation_events'], since: 3 });
+    expect(DEFAULT_SIDE_EVENTS_MAX_SKIP).toBe(86_400);
+    expect(Math.max(...starts) - 100).toBe(83_295);
+  });
+
+  it('never skips with a limit of 0', async () => {
+    vi.spyOn(defaultRetryDeps, 'sleep').mockResolvedValue();
+    const opts = await skipOptions();
+    const starts: number[] = [];
+    mswServer.use(
+      sideEvents(() => undefined, starts),
+      lookups,
+    );
+    const result = await runDataExport({
+      ...opts,
+      streams: ['side_conversation_events'],
+      since: 3,
+      sideEventsMaxSkip: 0,
+    });
+    expect(result.manifest.streams.side_conversation_events?.status).toBe('failed');
+    expect(starts).toEqual([3, 100]);
+  });
+
+  it('does not probe into the last minute, where Zendesk has no settled events', async () => {
+    vi.spyOn(defaultRetryDeps, 'sleep').mockResolvedValue();
+    const base = await skipOptions();
+    let time = 165_000;
+    const opts = {
+      ...base,
+      deps: {
+        errorWaitMs: 0,
+        now: () => time,
+        sleep: async (ms: number) => {
+          time += ms;
+        },
+      },
+    };
+    const starts: number[] = [];
+    mswServer.use(
+      sideEvents(() => undefined, starts),
+      lookups,
+    );
+    const result = await runDataExport({
+      ...opts,
+      streams: ['side_conversation_events'],
+      since: 3,
+    });
+    expect(result.manifest.streams.side_conversation_events?.status).toBe('failed');
+    expect(starts).toEqual([3, 100, 101, 103]);
+  });
+
+  it('stops probing on an error that is not a server error', async () => {
+    vi.spyOn(defaultRetryDeps, 'sleep').mockResolvedValue();
+    const opts = await skipOptions();
+    const starts: number[] = [];
+    mswServer.use(
+      sideEvents(
+        (start) => (start === 103 ? HttpResponse.json({}, { status: 422 }) : undefined),
+        starts,
+      ),
+      lookups,
+    );
+    const result = await runDataExport({
+      ...opts,
+      streams: ['side_conversation_events'],
+      since: 3,
+    });
+    const stream = result.manifest.streams.side_conversation_events;
+    expect(stream?.status).toBe('failed');
+    expect(stream?.reason).toBe('Validation error: {}');
+    expect(starts).toEqual([3, 100, 101, 103]);
+  });
+
+  it('keeps failing other streams on a 5xx, without skipping', async () => {
+    vi.spyOn(defaultRetryDeps, 'sleep').mockResolvedValue();
+    const opts = await skipOptions();
+    const starts: string[] = [];
+    mswServer.use(
+      http.get(`${API}/incremental/ticket_metric_events`, ({ request }) => {
+        starts.push(new URL(request.url).searchParams.get('start_time') ?? '');
+        return HttpResponse.json(SERVER_ERROR, { status: 500 });
+      }),
+    );
+    const result = await runDataExport({ ...opts, streams: ['ticket_metric_events'] });
+    const stream = result.manifest.streams.ticket_metric_events;
+    expect(stream?.status).toBe('failed');
+    expect(stream).not.toHaveProperty('skipped_windows');
+    expect(new Set(starts)).toEqual(new Set(['0']));
+  });
+
+  it('keeps committed windows on resume and does not probe them again', async () => {
+    vi.spyOn(defaultRetryDeps, 'sleep').mockResolvedValue();
+    const opts = await skipOptions();
+    let failLast = true;
+    const starts: number[] = [];
+    mswServer.use(
+      sideEvents((start) => {
+        if (start === 101)
+          return HttpResponse.json({
+            events: [event('e2')],
+            end_time: 200,
+            next_page: `${API}/tickets/side_conversations/events?start_time=200`,
+          });
+        if (start === 200)
+          return failLast
+            ? HttpResponse.json({}, { status: 422 })
+            : HttpResponse.json({ events: [event('e3')], end_time: 200, end_of_stream: true });
+        return undefined;
+      }, starts),
+      lookups,
+    );
+    const first = await runDataExport({
+      ...opts,
+      streams: ['side_conversation_events'],
+      since: 3,
+    });
+    expect(first.manifest.streams.side_conversation_events).toMatchObject({
+      status: 'failed',
+      pages: 2,
+      skipped_windows: [{ from: 100, to: 101, status: 500 }],
+    });
+    failLast = false;
+    starts.length = 0;
+    const resumed = await runDataExport({ ...opts, resume: basename(first.snapshot) });
+    expect(resumed.manifest.streams.side_conversation_events).toMatchObject({
+      status: 'exported',
+      pages: 3,
+      skipped_windows: [{ from: 100, to: 101, status: 500 }],
+    });
+    expect(starts).toEqual([200]);
+  });
+
+  it.each([
+    ['not a list', { from: 1 }],
+    ['a list with a non-object', [7]],
+  ])('refuses to resume with skipped windows that are %s', async (_label, value) => {
+    const opts = await options();
+    mswServer.use(
+      http.get(`${API}/tickets/side_conversations/events`, () =>
+        HttpResponse.json({}, { status: 422 }),
+      ),
+    );
+    const first = await runDataExport({ ...opts, streams: ['side_conversation_events'] });
+    const path = join(first.snapshot, 'manifest.json');
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    manifest.streams.side_conversation_events.skipped_windows = value;
+    await writeFile(path, JSON.stringify(manifest));
+    await expect(runDataExport({ ...opts, resume: basename(first.snapshot) })).rejects.toThrow(
+      'Invalid skipped windows checkpoint',
+    );
+  });
+
+  it.each([[-1], [1.5], [Number.NaN]])(
+    'rejects a skip limit of %s before any request',
+    async (limit) => {
+      const opts = await options();
+      await expect(
+        runDataExport({ ...opts, streams: ['side_conversation_events'], sideEventsMaxSkip: limit }),
+      ).rejects.toThrow('The side event skip limit must be a nonnegative number of seconds');
+    },
+  );
 });

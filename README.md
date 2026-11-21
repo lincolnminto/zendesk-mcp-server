@@ -293,7 +293,11 @@ precisa compará-lo com o sistema novo:
   `side_conversation_events`, também uma dica (`hint`): o token pode não ter o
   escopo `side_conversations:read`, que o `read` global não cobre. Uma conversa
   ilegível (403/404, por exemplo num ticket excluído) não derruba o stream: os
-  eventos dela ficam e ela é listada em `unreadable_conversations`.
+  eventos dela ficam e ela é listada em `unreadable_conversations`. Uma página de
+  eventos que responde 5xx em todas as tentativas é pulada: o export avança o
+  `start_time` em passos que dobram (até uma hora por passo, no máximo 24 h no
+  total, ajustável com `--side-events-max-skip`) e registra o intervalo perdido
+  em `skipped_windows`.
 - `zendesk-mcp-server record-goldens <subdominio> --export-dir <pasta-absoluta> --data-snapshot <pasta-do-export>`
   grava o comportamento do Zendesk sobre esse snapshot: visualizações
   compartilhadas ativas (contagem, ids em ordem, linhas), prévias de macros,
