@@ -411,7 +411,7 @@ Streams run sequentially in this order:
 | `organizations` | `organizations.ndjson` |
 | `ticket_events` | `ticket_events.ndjson`, derived `comments.ndjson` and `attachments.ndjson`. Sends `support_type_scope=all` on every request. Attachments contain metadata only; content URLs are never downloaded. Boundary event IDs are deduplicated across adjacent pages, including after resume. |
 | `ticket_metric_events` | `ticket_metric_events.ndjson` |
-| `side_conversation_events` | Raw incremental events in `side_conversation_events.ndjson`, with boundary deduplication and resume. Referenced conversations are fetched once per `(ticket_id, side_conversation_id)` in the snapshot and written to `side_conversations.ndjson` with `ticket_id`. Enabled by default; 403/404 marks the stream unavailable (`skipped`) and continues. Needs `side_conversations:read` on an OAuth token: a 403 adds a `hint` to re-authorize with [`login`](#re-authorize-login) and export the stream again. |
+| `side_conversation_events` | Raw incremental events in `side_conversation_events.ndjson`, with boundary deduplication and resume. Referenced conversations are fetched once per `(ticket_id, side_conversation_id)` in the snapshot and written to `side_conversations.ndjson` with `ticket_id`. Enabled by default; 403/404 on the events marks the stream unavailable (`skipped`) and continues. A 403/404 on one conversation's lookup (say, on a deleted ticket) only skips that conversation: its events stay, and the stream lists it in `unreadable_conversations` (`ticket_id`, `side_conversation_id`, `status`, `zendesk_error`), committed with its page and not looked up again on resume. Needs `side_conversations:read` on an OAuth token: a 403 that skips the stream adds a `hint` to re-authorize with [`login`](#re-authorize-login) and export the stream again. |
 | `groups` | `groups.ndjson` |
 | `group_memberships` | `group_memberships.ndjson` |
 | `organization_memberships` | `organization_memberships.ndjson` |
@@ -429,9 +429,11 @@ the recorded byte offsets before continuing, removing partial/uncommitted pages.
 Configuration progress is saved per resource. Completed and skipped streams are
 left intact; failed streams are retried. A 403/404 skips a stream with a reason;
 a 403 also records what Zendesk's response body said in `zendesk_error` (its
-`error` and `description`, or the first 500 characters of a body without them;
-never request headers or the token). Other failures are recorded and the
-remaining streams continue. A 401 aborts only
+`error` and `description`, or the first 500 characters of a body without them,
+`""` for an empty one; never request headers or the token) and, in
+`failed_path`, the API path of the request that got it (under `/api/v2`, without
+the query), whether the first page or a later one. Other failures are recorded
+and the remaining streams continue. A 401 aborts only
 when `/users/me` also rejects the token.
 
 After the client's own retry policy is exhausted, the exporter waits 60 seconds

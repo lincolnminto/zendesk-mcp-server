@@ -36,7 +36,9 @@ export const createPacedGet = (
   getToken: () => string | Promise<string>,
   rates: Partial<Record<Bucket, number>> = {},
   deps: ExportDeps = defaultDeps,
-  onRequest: () => void = () => undefined,
+  // Told the API path (no query) of every attempt, so a caller can name the
+  // request that failed.
+  onRequest: (path: string) => void = () => undefined,
 ) => {
   const limits = resolveRates(rates);
   const next: Record<Bucket, number> = { incremental: 0, standard: 0 };
@@ -57,7 +59,7 @@ export const createPacedGet = (
     while (true) {
       const token = await getToken();
       await pace(bucket);
-      onRequest();
+      onRequest(path);
       try {
         return await zendeskGet<T>(subdomain, token, path, params);
       } catch (err) {

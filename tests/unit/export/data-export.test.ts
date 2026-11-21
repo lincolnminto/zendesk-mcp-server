@@ -901,15 +901,18 @@ describe('additional data streams', () => {
       reason:
         'No access (403 Forbidden): the signed-in account cannot read it, or the plan lacks it.',
       zendesk_error: { error: 'Forbidden', description: 'You do not have access to this page.' },
+      failed_path: '/tickets/side_conversations/events',
       hint: 'The OAuth token may lack the side_conversations:read scope (sign-ins before it was requested hold only read). Re-authorize with "zendesk-mcp-server login testsubdomain --read-only" (without --read-only for a read-write server), then export side_conversation_events again.',
     });
     expect(streams.groups).toMatchObject({
       status: 'skipped',
       zendesk_error: { body: '<html> <body>Forbidden</body> </html>' },
+      failed_path: '/groups',
     });
     expect(streams.groups).not.toHaveProperty('hint');
     expect(streams.group_memberships?.status).toBe('skipped');
     expect(streams.group_memberships).not.toHaveProperty('zendesk_error');
+    expect(streams.group_memberships).not.toHaveProperty('failed_path');
     const saved = await readFile(join(result.snapshot, 'manifest.json'), 'utf8');
     expect(JSON.parse(saved).streams.side_conversation_events.zendesk_error).toEqual({
       error: 'Forbidden',
@@ -934,12 +937,194 @@ describe('additional data streams', () => {
     const manifest = JSON.parse(await readFile(path, 'utf8'));
     manifest.streams.groups.zendesk_error = { error: 'Forbidden' };
     manifest.streams.groups.hint = 'stale';
+    manifest.streams.groups.failed_path = '/stale';
     await writeFile(path, JSON.stringify(manifest));
     status = 200;
     const resumed = await runDataExport({ ...opts, resume: basename(first.snapshot) });
     expect(resumed.manifest.streams.groups?.status).toBe('exported');
     expect(resumed.manifest.streams.groups).not.toHaveProperty('zendesk_error');
+    expect(resumed.manifest.streams.groups).not.toHaveProperty('failed_path');
     expect(resumed.manifest.streams.groups).not.toHaveProperty('hint');
+  });
+
+  it('records the detail, path and hint of a 403 on a later side event page', async () => {
+    const opts = await options();
+    mswServer.use(
+      http.get(`${API}/tickets/side_conversations/events`, ({ request }) =>
+        new URL(request.url).searchParams.get('start_time') === '5'
+          ? new HttpResponse(null, { status: 403 })
+          : HttpResponse.json({
+              events: [{ id: 'e1', ticket_id: 8, side_conversation_id: 'sc1' }],
+              end_time: 5,
+              next_page: `${API}/tickets/side_conversations/events?start_time=5&secret=q`,
+            }),
+      ),
+      http.get(`${API}/tickets/8/side_conversations/sc1`, () =>
+        HttpResponse.json({ side_conversation: { id: 'sc1' } }),
+      ),
+    );
+    const result = await runDataExport({ ...opts, streams: ['side_conversation_events'] });
+    const stream = result.manifest.streams.side_conversation_events;
+    expect(stream).toMatchObject({
+      status: 'skipped',
+      pages: 1,
+      requests: 3,
+      zendesk_error: { body: '' },
+      failed_path: '/tickets/side_conversations/events',
+      hint: expect.stringContaining('login testsubdomain --read-only'),
+    });
+    expect(await lines(result.snapshot, 'side_conversation_events.ndjson')).toEqual([
+      { id: 'e1', ticket_id: 8, side_conversation_id: 'sc1' },
+    ]);
+  });
+
+  it('keeps the events of a conversation it cannot read and records the lookup', async () => {
+    const opts = await options();
+    const lookups: string[] = [];
+    const events = [
+      { id: 'e1', ticket_id: 8, side_conversation_id: 'sc1' },
+      { id: 'e2', ticket_id: 9, side_conversation_id: 'gone' },
+      { id: 'e3', ticket_id: 10, side_conversation_id: 'hidden' },
+      { id: 'e4', ticket_id: 9, side_conversation_id: 'gone' },
+    ];
+    mswServer.use(
+      http.get(`${API}/tickets/side_conversations/events`, () =>
+        HttpResponse.json({ events, end_of_stream: true }),
+      ),
+      http.get(`${API}/tickets/:ticket/side_conversations/:id`, ({ params }) => {
+        const id = String(params['id']);
+        lookups.push(`${params['ticket']}/${id}`);
+        if (id === 'gone')
+          return HttpResponse.json(
+            { error: 'RecordNotFound', description: 'Not found' },
+            { status: 404 },
+          );
+        if (id === 'hidden') return new HttpResponse('Forbidden', { status: 403 });
+        return HttpResponse.json({ side_conversation: { id } });
+      }),
+    );
+    const result = await runDataExport({ ...opts, streams: ['side_conversation_events'] });
+    const stream = result.manifest.streams.side_conversation_events;
+    expect(stream?.status).toBe('exported');
+    expect(stream).not.toHaveProperty('zendesk_error');
+    expect(stream?.unreadable_conversations).toEqual([
+      {
+        ticket_id: 9,
+        side_conversation_id: 'gone',
+        status: 404,
+        zendesk_error: { error: 'RecordNotFound', description: 'Not found' },
+      },
+      {
+        ticket_id: 10,
+        side_conversation_id: 'hidden',
+        status: 403,
+        zendesk_error: { body: 'Forbidden' },
+      },
+    ]);
+    expect(lookups).toEqual(['8/sc1', '9/gone', '10/hidden']);
+    expect(await lines(result.snapshot, 'side_conversation_events.ndjson')).toEqual(events);
+    expect(await lines(result.snapshot, 'side_conversations.ndjson')).toEqual([
+      { id: 'sc1', ticket_id: 8 },
+    ]);
+    const saved = JSON.parse(await readFile(join(result.snapshot, 'manifest.json'), 'utf8'));
+    expect(saved.streams.side_conversation_events.unreadable_conversations).toHaveLength(2);
+  });
+
+  it('still fails the page on another lookup error, recording no unreadable conversation', async () => {
+    const opts = await options();
+    mswServer.use(
+      http.get(`${API}/tickets/side_conversations/events`, () =>
+        HttpResponse.json({
+          events: [
+            { id: 'e1', ticket_id: 9, side_conversation_id: 'gone' },
+            { id: 'e2', ticket_id: 8, side_conversation_id: 'broken' },
+          ],
+          end_of_stream: true,
+        }),
+      ),
+      http.get(`${API}/tickets/9/side_conversations/gone`, () =>
+        HttpResponse.json({}, { status: 404 }),
+      ),
+      http.get(`${API}/tickets/8/side_conversations/broken`, () =>
+        HttpResponse.json({}, { status: 422 }),
+      ),
+    );
+    const result = await runDataExport({ ...opts, streams: ['side_conversation_events'] });
+    const stream = result.manifest.streams.side_conversation_events;
+    expect(stream?.status).toBe('failed');
+    expect(stream?.pages).toBe(0);
+    expect(stream).not.toHaveProperty('unreadable_conversations');
+    expect(stream).not.toHaveProperty('failed_path');
+  });
+
+  it('does not look up written or unreadable conversations again on resume', async () => {
+    const opts = await options();
+    let failSecondPage = true;
+    const lookups: string[] = [];
+    mswServer.use(
+      http.get(`${API}/tickets/side_conversations/events`, ({ request }) => {
+        const second = new URL(request.url).searchParams.get('start_time') === '5';
+        if (second && failSecondPage) return HttpResponse.json({}, { status: 422 });
+        return HttpResponse.json({
+          events: second
+            ? [
+                { id: 'e3', ticket_id: 8, side_conversation_id: 'sc1' },
+                { id: 'e4', ticket_id: 9, side_conversation_id: 'gone' },
+                { id: 'e5', ticket_id: 8, side_conversation_id: 'sc2' },
+              ]
+            : [
+                { id: 'e1', ticket_id: 8, side_conversation_id: 'sc1' },
+                { id: 'e2', ticket_id: 9, side_conversation_id: 'gone' },
+              ],
+          end_time: 5,
+          end_of_stream: second,
+          next_page: `${API}/tickets/side_conversations/events?start_time=5`,
+        });
+      }),
+      http.get(`${API}/tickets/:ticket/side_conversations/:id`, ({ params }) => {
+        const id = String(params['id']);
+        lookups.push(id);
+        return id === 'gone'
+          ? HttpResponse.json({}, { status: 403 })
+          : HttpResponse.json({ side_conversation: { id } });
+      }),
+    );
+    const first = await runDataExport({ ...opts, streams: ['side_conversation_events'] });
+    expect(first.manifest.streams.side_conversation_events?.status).toBe('failed');
+    expect(lookups).toEqual(['sc1', 'gone']);
+    failSecondPage = false;
+    const resumed = await runDataExport({ ...opts, resume: basename(first.snapshot) });
+    const stream = resumed.manifest.streams.side_conversation_events;
+    expect(stream?.status).toBe('exported');
+    expect(lookups).toEqual(['sc1', 'gone', 'sc2']);
+    expect(stream?.unreadable_conversations).toEqual([
+      { ticket_id: 9, side_conversation_id: 'gone', status: 403, zendesk_error: { body: '{}' } },
+    ]);
+    expect(await lines(resumed.snapshot, 'side_conversations.ndjson')).toEqual([
+      { id: 'sc1', ticket_id: 8 },
+      { id: 'sc2', ticket_id: 8 },
+    ]);
+  });
+
+  it.each([
+    ['not a list', { ticket_id: 9 }],
+    ['a list with a non-object', [null]],
+    ['a list with a list', [[9, 'gone']]],
+  ])('refuses to resume with unreadable conversations that are %s', async (_label, value) => {
+    const opts = await options();
+    mswServer.use(
+      http.get(`${API}/tickets/side_conversations/events`, () =>
+        HttpResponse.json({}, { status: 422 }),
+      ),
+    );
+    const first = await runDataExport({ ...opts, streams: ['side_conversation_events'] });
+    const path = join(first.snapshot, 'manifest.json');
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    manifest.streams.side_conversation_events.unreadable_conversations = value;
+    await writeFile(path, JSON.stringify(manifest));
+    await expect(runDataExport({ ...opts, resume: basename(first.snapshot) })).rejects.toThrow(
+      'Invalid unreadable conversations checkpoint',
+    );
   });
 });
 
@@ -962,8 +1147,8 @@ describe('zendeskErrorBody', () => {
     expect(zendeskErrorBody(body)).toEqual(expected);
   });
 
-  it.each([[''], ['  \n ']])('has nothing to record for an empty body %j', (body) => {
-    expect(zendeskErrorBody(body)).toBeUndefined();
+  it.each([[''], ['  \n ']])('records an empty body %j as empty', (body) => {
+    expect(zendeskErrorBody(body)).toEqual({ body: '' });
   });
 
   it('keeps at most 500 characters of a body without error fields', () => {

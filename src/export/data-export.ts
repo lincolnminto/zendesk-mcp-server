@@ -66,17 +66,33 @@ export interface StreamState {
   reason?: string;
   /** What Zendesk's 403 response body said; see `zendeskErrorBody`. */
   zendesk_error?: ZendeskErrorBody;
+  /** API path (under /api/v2, without the query) of the request that got the 403. */
+  failed_path?: string;
   /** How to recover from a skip whose likely cause is known. */
   hint?: string;
+  /** Side conversations whose lookup got 403/404; their events are still exported. */
+  unreadable_conversations?: UnreadableConversation[];
 }
 /**
  * The documented `error` / `description` strings of a Zendesk error body, or,
- * for a body without them (another JSON shape, an HTML page), a short excerpt.
+ * for a body without them (another JSON shape, an HTML page, nothing), a short
+ * excerpt, empty for an empty body.
  */
 export interface ZendeskErrorBody {
   error?: string;
   description?: string;
   body?: string;
+}
+export interface UnreadableConversation {
+  ticket_id: number;
+  side_conversation_id: string;
+  status: number;
+  zendesk_error: ZendeskErrorBody;
+}
+interface RequestState {
+  current: StreamState | undefined;
+  /** Path of the latest request, so a failure can name it. */
+  path?: string | undefined;
 }
 export interface DataManifest {
   subdomain: string;
@@ -310,6 +326,13 @@ const validateManifest = (manifest: DataManifest, options: DataExportOptions): v
     )
       throw new Error('Invalid stream checkpoint');
     validatePosition(name as DataStream, state.position);
+    const unreadable: unknown = state.unreadable_conversations;
+    if (
+      unreadable !== undefined &&
+      (!Array.isArray(unreadable) ||
+        unreadable.some((entry) => !entry || typeof entry !== 'object' || Array.isArray(entry)))
+    )
+      throw new Error('Invalid unreadable conversations checkpoint');
     if (Object.keys(state.files).some((file) => !allowedFiles(name as DataStream).includes(file)))
       throw new Error('Invalid checkpoint filename');
   }
@@ -334,8 +357,9 @@ export const prepareDataExport = async (options: DataExportOptions) => {
       throw new Error('Resume streams must exist in the original snapshot');
   }
   const rates = resolveRates({ ...manifest?.rates, ...options.rates });
-  const requestState: { current: StreamState | undefined } = { current: undefined };
-  const get = createPacedGet(options.subdomain, options.getToken, rates, deps, () => {
+  const requestState: RequestState = { current: undefined };
+  const get = createPacedGet(options.subdomain, options.getToken, rates, deps, (path) => {
+    requestState.path = path;
     if (requestState.current) requestState.current.requests += 1;
   });
   const me = await get<{ user: { id: number; role: string } }>('standard', '/users/me');
@@ -424,10 +448,7 @@ const exportPages = async (
     streamFiles(name).map((file) => [file, state.files[file] ?? { lines: 0, bytes: 0 }]),
   );
   await truncateFiles(snapshot, recorded);
-  const conversations =
-    name === 'side_conversation_events'
-      ? await readConversationKeys(snapshot, state.files['side_conversations.ndjson'])
-      : new Set<string>();
+  const conversations = await knownConversations(name, snapshot, state);
   while (state.position.request) {
     const current = state.position.request;
     const body = await getPage(name, state, current, get, options.subdomain);
@@ -454,14 +475,15 @@ const exportPages = async (
       .filter((id): id is string | number => typeof id === 'number' || typeof id === 'string');
     if (next && JSON.stringify(next) === JSON.stringify(current) && items.length === 0)
       throw new Error('Incremental pagination made no progress');
-    const files = pageFiles(name, body, items);
-    if (name === 'side_conversation_events')
-      files['side_conversations.ndjson'] = await conversationRows(items, conversations, get);
+    const { files, unreadable } = await pageOutput(name, body, items, conversations, get);
     // Do not publish new offsets until every file in this page has been flushed.
     const updated = { ...state.files };
     for (const [file, values] of Object.entries(files))
       updated[file] = await appendPage(snapshot, file, values, state.files[file]);
     state.files = updated;
+    // Committed with the page: an uncommitted page is retried, lookups included.
+    if (unreadable.length)
+      state.unreadable_conversations = [...(state.unreadable_conversations ?? []), ...unreadable];
     state.position = { request: next, previous_ids: ids };
     state.pages += 1;
     state.duration_ms = (options.deps ?? defaultDeps).now() - Date.parse(state.started_at);
@@ -472,6 +494,35 @@ const exportPages = async (
 
 const conversationKey = (ticket: unknown, conversation: unknown): string =>
   JSON.stringify([ticket, conversation]);
+
+// Conversations a resumed side-event stream must not look up again: those
+// written to the snapshot and those recorded as unreadable.
+const knownConversations = async (
+  name: DataStream,
+  snapshot: string,
+  state: StreamState,
+): Promise<Set<string>> => {
+  if (name !== 'side_conversation_events') return new Set<string>();
+  const seen = await readConversationKeys(snapshot, state.files['side_conversations.ndjson']);
+  for (const entry of state.unreadable_conversations ?? [])
+    seen.add(conversationKey(entry.ticket_id, entry.side_conversation_id));
+  return seen;
+};
+
+// A page's NDJSON rows per file, plus, for side events, the referenced
+// conversations it read and those it could not.
+const pageOutput = async (
+  name: DataStream,
+  body: Body,
+  items: Body[],
+  seen: Set<string>,
+  get: ReturnType<typeof createPacedGet>,
+): Promise<{ files: Record<string, unknown[]>; unreadable: UnreadableConversation[] }> => {
+  const files = pageFiles(name, body, items);
+  if (name !== 'side_conversation_events') return { files, unreadable: [] };
+  const { conversations, unreadable } = await conversationRows(items, seen, get);
+  return { files: { ...files, 'side_conversations.ndjson': conversations }, unreadable };
+};
 
 /** Rebuild deduplication from committed rows after truncation, including on resume. */
 const readConversationKeys = async (snapshot: string, stats?: FileStats): Promise<Set<string>> => {
@@ -497,12 +548,40 @@ const readConversationKeys = async (snapshot: string, stats?: FileStats): Promis
   return seen;
 };
 
+// One unreadable conversation (403/404: say, on a deleted ticket) must not cost
+// the stream: its events are kept and the lookup is recorded instead.
+const readConversation = async (
+  get: ReturnType<typeof createPacedGet>,
+  ticket: number,
+  id: string,
+): Promise<{ body: Body } | { unreadable: UnreadableConversation }> => {
+  try {
+    return {
+      body: await get<Body>(
+        'standard',
+        `/tickets/${ticket}/side_conversations/${encodeURIComponent(id)}`,
+      ),
+    };
+  } catch (err) {
+    if (!(err instanceof ZendeskApiError && (err.status === 403 || err.status === 404))) throw err;
+    return {
+      unreadable: {
+        ticket_id: ticket,
+        side_conversation_id: id,
+        status: err.status,
+        zendesk_error: zendeskErrorBody(err.body),
+      },
+    };
+  }
+};
+
 const conversationRows = async (
   items: Body[],
   seen: Set<string>,
   get: ReturnType<typeof createPacedGet>,
-): Promise<Body[]> => {
+): Promise<{ conversations: Body[]; unreadable: UnreadableConversation[] }> => {
   const conversations: Body[] = [];
+  const unreadable: UnreadableConversation[] = [];
   for (const event of items) {
     const ticket = event['ticket_id'];
     const id = event['side_conversation_id'];
@@ -510,17 +589,19 @@ const conversationRows = async (
       throw new Error('Missing ticket_id or side_conversation_id on side conversation event');
     const key = conversationKey(ticket, id);
     if (seen.has(key)) continue;
-    const body = await get<Body>(
-      'standard',
-      `/tickets/${ticket}/side_conversations/${encodeURIComponent(id)}`,
-    );
-    const conversation = body['side_conversation'];
+    const read = await readConversation(get, ticket as number, id);
+    if ('unreadable' in read) {
+      unreadable.push(read.unreadable);
+      seen.add(key);
+      continue;
+    }
+    const conversation = read.body['side_conversation'];
     if (!conversation || typeof conversation !== 'object' || Array.isArray(conversation))
       throw new Error('Expected side_conversation to be an object');
     conversations.push({ ...conversation, ticket_id: ticket });
     seen.add(key);
   }
-  return conversations;
+  return { conversations, unreadable };
 };
 
 const cursorNext = (body: Body, current: ApiRequest, subdomain: string): ApiRequest | null => {
@@ -660,7 +741,7 @@ const BODY_EXCERPT_MAX = 500;
 const WHITESPACE_RUN = /\s+/g;
 
 // Only the response body is kept: never the request, its headers or the token.
-export const zendeskErrorBody = (body: string): ZendeskErrorBody | undefined => {
+export const zendeskErrorBody = (body: string): ZendeskErrorBody => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -672,8 +753,7 @@ export const zendeskErrorBody = (body: string): ZendeskErrorBody | undefined => 
   if (typeof fields['error'] === 'string') summary.error = fields['error'];
   if (typeof fields['description'] === 'string') summary.description = fields['description'];
   if (summary.error !== undefined || summary.description !== undefined) return summary;
-  const excerpt = body.replace(WHITESPACE_RUN, ' ').trim().slice(0, BODY_EXCERPT_MAX);
-  return excerpt ? { body: excerpt } : undefined;
+  return { body: body.replace(WHITESPACE_RUN, ' ').trim().slice(0, BODY_EXCERPT_MAX) };
 };
 
 // Side conversations sit outside the global `read` scope, and tokens signed in
@@ -689,6 +769,7 @@ const recordFailure = async (
   err: unknown,
   state: StreamState,
   options: DataExportOptions,
+  failedPath: string | undefined,
   get: ReturnType<typeof createPacedGet>,
   checkpoint: () => Promise<void>,
 ): Promise<void> => {
@@ -699,9 +780,11 @@ const recordFailure = async (
     state.status = 'skipped';
     state.reason = skipReason(err);
   }
+  // Whichever request got the 403 (the first page or a later one), say what
+  // Zendesk answered and where.
   if (err.status === 403) {
-    const detail = zendeskErrorBody(err.body);
-    if (detail) state.zendesk_error = detail;
+    state.zendesk_error = zendeskErrorBody(err.body);
+    if (failedPath !== undefined) state.failed_path = failedPath;
     if (name === 'side_conversation_events') state.hint = sideConversationsHint(options.subdomain);
   }
   if (err.status !== 401) return;
@@ -721,7 +804,7 @@ const executeExport = async (
   manifest: DataManifest,
   deps: ExportDeps,
   get: ReturnType<typeof createPacedGet>,
-  requestState: { current: StreamState | undefined },
+  requestState: RequestState,
 ) => {
   const checkpoint = async () => {
     await writeManifest(snapshot, manifest);
@@ -737,10 +820,12 @@ const executeExport = async (
     )
       continue;
     requestState.current = state;
+    requestState.path = undefined;
     if (state.status === 'pending') state.started_at = new Date(deps.now()).toISOString();
     state.status = 'running';
     delete state.reason;
     delete state.zendesk_error;
+    delete state.failed_path;
     delete state.hint;
     delete state.finished_at;
     await checkpoint();
@@ -753,7 +838,7 @@ const executeExport = async (
     } catch (err) {
       state.finished_at = new Date(deps.now()).toISOString();
       state.duration_ms = deps.now() - Date.parse(state.started_at);
-      await recordFailure(name, err, state, options, get, checkpoint);
+      await recordFailure(name, err, state, options, requestState.path, get, checkpoint);
     }
     state.finished_at = new Date(deps.now()).toISOString();
     state.duration_ms = deps.now() - Date.parse(state.started_at);

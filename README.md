@@ -288,9 +288,12 @@ precisa compará-lo com o sistema novo:
   Ambos ficam ligados por padrão e podem ser selecionados com `--only <stream>`;
   contas sem acesso ao add-on de conversas paralelas registram o stream como
   indisponível (`skipped`) no manifest e seguem com o export. Um 403 grava no
-  manifest o `error` e a `description` da resposta do Zendesk (`zendesk_error`);
-  em `side_conversation_events`, também uma dica (`hint`): o token pode não ter o
-  escopo `side_conversations:read`, que o `read` global não cobre.
+  manifest o `error` e a `description` da resposta do Zendesk (`zendesk_error`) e
+  o caminho da requisição que falhou (`failed_path`); em
+  `side_conversation_events`, também uma dica (`hint`): o token pode não ter o
+  escopo `side_conversations:read`, que o `read` global não cobre. Uma conversa
+  ilegível (403/404, por exemplo num ticket excluído) não derruba o stream: os
+  eventos dela ficam e ela é listada em `unreadable_conversations`.
 - `zendesk-mcp-server record-goldens <subdominio> --export-dir <pasta-absoluta> --data-snapshot <pasta-do-export>`
   grava o comportamento do Zendesk sobre esse snapshot: visualizações
   compartilhadas ativas (contagem, ids em ordem, linhas), prévias de macros,

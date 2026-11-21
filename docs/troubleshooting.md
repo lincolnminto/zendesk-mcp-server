@@ -106,8 +106,8 @@ Side conversations need the `side_conversations:read` OAuth scope, which the
 global `read` scope does not cover. A token signed in before the server requested
 it holds only `read` (or `read write`): it keeps working for everything else, but
 the stream comes back `skipped` with a `hint` in `manifest.json`, next to
-`zendesk_error`, what Zendesk's 403 body said. Re-authorize and export the stream
-again:
+`zendesk_error`, what Zendesk's 403 body said, and `failed_path`, the request that
+got it. Re-authorize and export the stream again:
 
 ```bash
 zendesk-mcp-server login <subdomain> --read-only
@@ -120,6 +120,10 @@ server, run `login <subdomain>` without `--read-only`. If `login` warns that
 Zendesk did not grant `side_conversations:read`, the account or its OAuth client
 does not allow that scope, and the 403 is not a token problem
 ([`login`](configuration.md#re-authorize-login)).
+
+A 403 or 404 on a single conversation (say, one on a deleted ticket) does not
+skip the stream: its events are kept and the conversation is listed in
+`unreadable_conversations` with the status and what Zendesk said.
 
 ## My HTTP session disappears after a pause, even though the stream stayed up
 
